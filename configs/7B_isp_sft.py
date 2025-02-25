@@ -245,6 +245,7 @@ parallel = dict(
 cudnn_deterministic = False
 cudnn_benchmark = False
 
+
 monitor = dict(
     # feishu alert configs
     alert=dict(
