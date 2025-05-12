@@ -1,3 +1,4 @@
+import glob
 import os
 import socket
 import time
@@ -19,6 +20,8 @@ from internlm.initialize.legacy.launch import (
 from internlm.model.base_model import BaseModel
 from internlm.model.registry import model_initializer
 from internlm.monitor import send_alert_message
+from internlm.param_server.client.send_recv import client_recv, client_recv_ckpt_status
+from internlm.param_server.common import config as ps_config
 from internlm.solver.optimizer import HybridZeroOptimizer, HybridZeroOptimizer_v2
 from internlm.utils.common import get_current_device
 from internlm.utils.logger import get_logger
@@ -61,6 +64,42 @@ class CheckpointLoadContent:
     SCHEDULAER = "scheduler"
 
 
+def is_time_to_load_ckpt_from_ps(load_path):
+    if load_path is None:
+        return True
+    model_ckpt = glob.glob(os.path.join(load_path, "model*"))[0]
+    save_time = os.path.getmtime(model_ckpt)
+    current_time = time.time()
+    # Time from ckpt save to now
+    if current_time - save_time <= gpc.config.ckpt.expiration_time:
+        return False
+    return True
+
+
+def try_load_model_ckpt_from_ps(ckpt_mm):
+    load_from_ps = True
+    load_content = ckpt_mm.load_ckpt_info["content"]
+    if gpc.use_ps:
+        # force to load from ps
+        if gpc.config.ckpt.load_ckpt_from_ps:
+            load_from_ps = True
+        elif load_content.not_only_load(CheckpointLoadContent.MODEL) and is_time_to_load_ckpt_from_ps(
+            ckpt_mm.load_ckpt_info["path"]
+        ):
+            load_from_ps = True
+
+    if load_from_ps:
+        ckpt_status = client_recv_ckpt_status()
+        if ckpt_status == 0:
+            logger.error("No ps checkpoint available, skip loading checkpoint from ps.")
+            load_from_ps = False
+
+    if load_from_ps:
+        ckpt_mm.load_from_ps = True
+        client_recv(ckpt_mm.model, optimizer=ckpt_mm.optimizer, request_for_ckpt=True, dynamic_config=ps_config)
+        logger.info("Successfully load model ckpt from ps")
+
+
 def try_load_internevo_ckpt(ckpt_mm, load_info, train_state: TrainState = None):
     """Tries to load a checkpoint from the given folder.
 
@@ -84,9 +123,10 @@ def try_load_internevo_ckpt(ckpt_mm, load_info, train_state: TrainState = None):
     """
     load_content_str, load_ckpt_folder, load_content = process_load_info(load_info)
 
-    if load_content.need_load(CheckpointLoadContent.MODEL):
+    if not ckpt_mm.load_from_ps and load_content.need_load(CheckpointLoadContent.MODEL):
         load_model_checkpoint(folder=load_ckpt_folder, model=ckpt_mm.model)
         load_content_str += f"{CheckpointLoadContent.MODEL}, "
+        logger.error("Load model ckpt from local.")
 
     if load_content.not_only_load(CheckpointLoadContent.MODEL):
         # load training states.
@@ -183,7 +223,7 @@ class CheckpointLoadMask:
         if "all" in self.load_set:
             self.load_set = set(CheckpointLoadMask.LOAD_CONTENT_DICT.values())
         else:
-            self.load_set = set(map(lambda x: CheckpointLoadMask.LOAD_CONTENT_DICT[x.lower()], content))
+            self.load_set = [x.lower() for x in content if x.lower() in CheckpointLoadMask.LOAD_CONTENT_DICT]
 
     def need_load(self, content: CheckpointLoadContent):
         return content in self.load_set
@@ -316,6 +356,9 @@ class CheckpointManager:
 
         # Auto-reload latest checkpoint, it will overwrite the setting of 'load_ckpt_info'.
         self.auto_resume = get_config_value(ckpt_config, "auto_resume", None)
+        # notice!
+        if gpc.use_ps:
+            self.load_ckpt_info = dict(path=None, content=("model",), ckpt_type="internevo")
         if self.auto_resume is None:  # (legacy): Try Compatible with old interfaces
             self.auto_resume = auto_resume_sanity_check(ckpt_config)
         if self.auto_resume:
@@ -344,6 +387,8 @@ class CheckpointManager:
         # test storage setting is ok.
         if self.enable_save_ckpt:
             self.try_ping_storage()
+            
+        self.load_from_ps = True
 
     def quit_signal_handler(self, train_state) -> bool:
         """
@@ -571,6 +616,13 @@ now step_count is {train_state.step_count}",
         return dict(path=latest_ckpt, content=("all",), ckpt_type="internevo")
 
     def try_resume_training(self, train_state: TrainState, current_time=""):
+        if gpc.config.use_ps:
+            assert self.load_ckpt_info["ckpt_type"] == "internevo"
+            # when not load optimizer state, we need to reload fp32 param.
+            try_load_model_ckpt_from_ps(self)
+            if self.load_from_ps and gpc.is_rank_for_log():
+                logger.info("Load model checkpoint from ps successfully!")
+                
         if self.load_ckpt_info is None or self.load_ckpt_info["path"] is None:
             if gpc.is_rank_for_log():
                 logger.info(

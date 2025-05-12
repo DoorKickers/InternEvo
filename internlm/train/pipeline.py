@@ -158,6 +158,7 @@ map_fqn_global_to_local = {}
 
 
 def set_param_unique_tracking_name(model):
+    uc_enable = True #att
     for chunk_id, chunk in enumerate(unwrap_naive_amp(model)):
         # Important: only works for llama-class models
         childrens = chunk.named_children()
@@ -188,29 +189,30 @@ def set_param_unique_tracking_name(model):
                                     f"{full_name}.bias",
                                 )
 
-                            setattr(
-                                child.weight,
-                                "fqn",
-                                f"{local_fqn}",
-                            )
-                            if child.bias is not None:
+                            if uc_enable:
                                 setattr(
-                                    child.bias,
+                                    child.weight,
                                     "fqn",
                                     f"{local_fqn}",
                                 )
+                                if child.bias is not None:
+                                    setattr(
+                                        child.bias,
+                                        "fqn",
+                                        f"{local_fqn}",
+                                    )
 
-                            assert hasattr(child, "offset"), f"{child}"
-                            map_fqn_local_to_global[local_fqn] = global_fqn
-                            map_fqn_global_to_local[global_fqn] = local_fqn
+                                assert hasattr(child, "offset"), f"{child}"
+                                map_fqn_local_to_global[local_fqn] = global_fqn
+                                map_fqn_global_to_local[global_fqn] = local_fqn
 
-                            assert global_fqn not in map_layer_attr, f"{map_layer_attr} exists"
-                            map_layer_attr[global_fqn] = {
-                                "offset": getattr(child, "offset", [0] * len(child.weight.size())),
-                                "complete_size": getattr(child, "complete_size", list(child.weight.size())),
-                            }
+                                assert global_fqn not in map_layer_attr, f"{map_layer_attr} exists"
+                                map_layer_attr[global_fqn] = {
+                                    "offset": getattr(child, "offset", [0] * len(child.weight.size())),
+                                    "complete_size": getattr(child, "complete_size", list(child.weight.size())),
+                                }
 
-                        elif isinstance(child, (RMSNorm)):
+                        elif isinstance(child, (RMSNorm)) and uc_enable:
                             map_fqn_local_to_global[local_fqn] = global_fqn
                             map_fqn_global_to_local[global_fqn] = local_fqn
                             setattr(
@@ -242,23 +244,24 @@ def set_param_unique_tracking_name(model):
                     )
                     assert local_fqn not in map_layer_attr, f"{map_layer_attr} exists"
 
-                setattr(
-                    children.weight,
-                    "fqn",
-                    f"{local_fqn}",
-                )
-                if getattr(children, "bias", None) is not None:
-                    if children.bias is not None:
-                        setattr(
-                            children.bias,
-                            "fqn",
-                            f"{local_fqn}",
-                        )
+                if uc_enable:
+                    setattr(
+                        children.weight,
+                        "fqn",
+                        f"{local_fqn}",
+                    )
+                    if getattr(children, "bias", None) is not None:
+                        if children.bias is not None:
+                            setattr(
+                                children.bias,
+                                "fqn",
+                                f"{local_fqn}",
+                            )
 
-                map_layer_attr[local_fqn] = {
-                    "offset": getattr(children, "offset", [0] * len(children.weight.size())),
-                    "complete_size": getattr(children, "complete_size", list(children.weight.size())),
-                }
+                    map_layer_attr[local_fqn] = {
+                        "offset": getattr(children, "offset", [0] * len(children.weight.size())),
+                        "complete_size": getattr(children, "complete_size", list(children.weight.size())),
+                    }
 
 
 def generate_meta_data(optimizer):
@@ -451,6 +454,7 @@ def inject_model(model):
     # For non-HF cases, set tracking name for parameters
     if not is_using_hf():
         set_param_unique_tracking_name(model)
+    # set_param_unique_tracking_name(model)
 
     # For non-fsdp cases, set model inject helper
     if not is_using_fsdp():

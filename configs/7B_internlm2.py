@@ -33,12 +33,15 @@ ckpt = dict(
     # path specified in `load_ckpt_info` by default.
     # If you want to initialize your model weights from another model, you must set `auto_resume` to False.
     # If you want to train from scratch, please set `auto_resume` to False and 'load_ckpt_info' to None.
+    load_ckpt_info=dict(path=MODEL_ONLY_FOLDER, content=("model"), ckpt_type="internevo"),
     auto_resume=False,
     checkpoint_every=CHECKPOINT_EVERY,
     async_upload=True,  # async ckpt upload. (only work for boto3 ckpt)
     async_upload_tmp_folder="/dev/shm/internlm_tmp_ckpt/",  # path for temporarily files during asynchronous upload.
     oss_snapshot_freq=int(CHECKPOINT_EVERY / 2),  # snapshot ckpt save frequency.
 )
+
+sync_step = 10
 
 TRAIN_FOLDER = None
 VALID_FOLDER = None  # "/path/to/dataset"
@@ -155,7 +158,7 @@ model = dict(
     norm_type="rmsnorm",
     layer_norm_epsilon=1e-5,
     num_kv_attention_heads=NUM_KV_ATTENTION_HEAD,
-    use_flash_attn=True,
+    use_flash_attn=False,
     # Whether the odd and even columns of the query and key in the model are normally interleaved.
     # If it's True, the model's odd and even columns are normally ordered; if it's False,
     # it means that the model has prematurely concatenated all odd columns and even columns in front
@@ -192,9 +195,9 @@ weight parallel (dict):
 """
 parallel = dict(
     zero1=dict(size=-1),
-    tensor=dict(size=2, mode="isp"),
-    pipeline=dict(size=1, interleaved_overlap=True, mode="1f1b"),
-    weight=dict(size=2, overlap=True),
+    tensor=dict(size=2, mode="mtp"),
+    pipeline=dict(size=2, interleaved_overlap=True, mode="1f1b"),
+    weight=dict(size=1, overlap=True),
 )
 
 cudnn_deterministic = False

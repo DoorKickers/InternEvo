@@ -170,6 +170,9 @@ class ParallelContext(metaclass=SingletonMeta):
         self._expert_parallel_group_names = []
         self.is_evaluating = False
         self.v_shape = False
+        
+        self.consume_steps = 0
+        self.use_ps = False
 
     @property
     def config(self):
@@ -403,7 +406,11 @@ class ParallelContext(metaclass=SingletonMeta):
            use_cpu (bool): whether to set up cpu process group.
         """
         # initialize the default process group
-        init_method = f"tcp://[{host}]:{port}"
+        current_version = sys.version_info
+        if current_version.major > 3 or (current_version.major == 3 and current_version.minor >= 10):
+            init_method = f"tcp://{host}:{port}"
+        else:
+            init_method = f"tcp://{host}:{port}"
         dist.init_process_group(
             rank=rank,
             world_size=world_size,

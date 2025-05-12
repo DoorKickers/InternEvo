@@ -1027,7 +1027,7 @@ class SelfAttention(nn.Module):
             softmax_scale,
             causal,
             *extra_args,
-            layer_idx=self.layer_idx,
+            # layer_idx=self.layer_idx,
         )
 
     @forward.register(conditions=(str(QKVPackType.QKVSPLITED), str(CuSeqlenType.With)))

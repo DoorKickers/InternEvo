@@ -63,6 +63,12 @@ def get_default_parser():
     parser.add_argument(
         "--disable_volc_topology", default=False, action="store_true", help="disable volc switch topology."
     )
+    parser.add_argument("--group_id", type=int, default=0)
+    parser.add_argument("--use_ps", default=False, action="store_true", help="use parameter server or not")
+    parser.add_argument(
+        "--group_weight", type=float, default=1.0, help="group weight, the value range is between 0 and 1."
+    )
+
     return parser
 
 
@@ -302,6 +308,11 @@ def args_sanity_check():
         # If 'auto_resume' is not given, we set it to True, so internlm can have opportunity
         # to auto-load latest checkpoint.
         ckpt._add_item("auto_resume", True)
+        
+    if "load_ckpt_from_ps" not in ckpt:
+        ckpt.load_ckpt_from_ps = True
+    if "expiration_time" not in ckpt:
+        ckpt.expiration_time = 3600  # 1 hour
 
     if gpc.is_rank_for_log():
         logger.info("+" * 15 + " Ckpt Info " + "+" * 15)  # pylint: disable=W1201

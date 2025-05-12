@@ -8,6 +8,9 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader
 
+from http.server import HTTPServer
+import threading
+
 from internlm.checkpoint.checkpoint_manager import CheckpointManager
 from internlm.core.context import global_context as gpc
 from internlm.core.context.process_group_initializer import ParallelMode
@@ -20,6 +23,11 @@ from internlm.initialize.initialize_trainer import initialize_trainer
 from internlm.model.losses.ce_loss import InternLoss
 from internlm.model.metrics import AccPerplex
 from internlm.monitor.monitor import send_alert_message
+from internlm.param_server.client.client import client
+from internlm.param_server.client.send_recv import try_interact_with_param_server
+from internlm.param_server.common.config import master_server
+from internlm.param_server.client.client import http_server
+from internlm.param_server.client.client_http_service import ClientServiceHandler
 from internlm.train.pipeline import (
     generate_meta_data,
     get_scheduler_hooks,
@@ -93,6 +101,8 @@ class TrainerBuilder(Trainer):
                 - dataset_types (list): List of dataset types to be used for training.
 
         """
+        self.model = model
+        
         # set very_beginning_time
         self.very_beginning_time = time.time()
         # broadcast current_time and setup logging
@@ -120,6 +130,31 @@ class TrainerBuilder(Trainer):
 
         # initialize optimizer
         optimizer, beta2_scheduler, lr_scheduler = initialize_optimizer(model, isp_communicator)
+        self.optimizer = optimizer
+        
+        self.use_ps = kwargs["use_ps"]
+        gpc.config.use_ps = self.use_ps
+        self.group_id = kwargs["group_id"]
+        self.group_weight = kwargs["group_weight"]
+        if self.use_ps and gpc.get_local_rank(ParallelMode.DATA) == 0 and gpc.get_local_rank(ParallelMode.TENSOR) == 0:
+            sync_step = gpc.config.get("sync_step", None)
+            if sync_step is None or sync_step < 1:
+                raise ValueError("sync_step must be a positive integer.")
+
+            # Initialize client
+            need_heartbeat = True
+            def http_main():
+                logger.info(f"HTTP server has started")
+                http_server = HTTPServer(('0.0.0.0', 55504), ClientServiceHandler)
+                http_server.serve_forever()
+            if gpc.is_using_parallel_mode(ParallelMode.PIPELINE):
+                need_heartbeat = gpc.is_last_rank(ParallelMode.PIPELINE)
+                if gpc.is_last_rank(ParallelMode.PIPELINE):
+                    http_server_thread = threading.Thread(target=http_main, daemon=True)
+                    http_server_thread.start()
+            client.start(self.group_id, self.group_weight, master_server, need_heartbeat)
+
+
 
         # generate ckpt metaData
         meta_data = generate_meta_data(optimizer)
@@ -129,6 +164,8 @@ class TrainerBuilder(Trainer):
             model, optimizer, lr_scheduler, train_dl, config_lines, meta_data
         )
         self.ckpt_manager.try_resume_training(train_state, self.current_time)
+        if not self.ckpt_manager.load_from_ps:
+            gpc.consume_steps = train_state.batch_count % gpc.config.sync_step
 
         # initialize customed llm writer
         self.writer = self._initialize_writer(train_state, config_lines)
@@ -288,7 +325,7 @@ class TrainerBuilder(Trainer):
         loss, moe_loss = self._forward_backward(batch)
         timer("fwd-bwd").stop()
 
-        success_update, grad_norm_groups = self._update_parameters()
+        success_update, grad_norm_groups = self._update_parameters(batch)
         self._record_metrics(batch_count, batch, start_time, loss, moe_loss, success_update, grad_norm_groups)
         timer("one-batch").stop()
 
@@ -320,9 +357,15 @@ class TrainerBuilder(Trainer):
             moe_loss = None
         return loss, moe_loss
 
-    def _update_parameters(self):
+    def _update_parameters(self, batch):
         trainer_result = self.step()
         assert trainer_result is not None
+        
+        data_world_size = gpc.get_world_size(ParallelMode.DATA)
+        if self.use_ps:
+            consume_tokens = self.train_state.num_consumed_tokens + data_world_size * batch[1].nelement()
+            try_interact_with_param_server(self.model, self.optimizer, consume_tokens=consume_tokens)
+        
         success_update, grad_norm_groups = trainer_result
         if success_update:
             self.train_state.step_count += 1

@@ -247,6 +247,7 @@ def pipeline_parallel_sharding_wrapper(
         chunk = model_builder(**kwargs).to(device)
         setattr(chunk, "first_layer", start)
         setattr(chunk, "last_layer", end)
+        setattr(chunk, "num_layers", num_layers)
 
         models.append(chunk)
 

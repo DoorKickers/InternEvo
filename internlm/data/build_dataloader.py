@@ -124,6 +124,7 @@ def get_tokenized_valid_loader_items(data_cfg):
     if not isinstance(valid_ds, dict):
         valid_ds = {"val": valid_ds}
 
+    # notice!!! origin is streaming_jsonl_collate_fn
     valid_collate_fn = partial(jsonl_ds_collate_fn, max_length_per_sample=data_cfg.seq_len)
 
     return valid_ds, valid_collate_fn

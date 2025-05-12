@@ -10,6 +10,7 @@ from torch import Tensor, nn
 
 from internlm.core.context import ParallelMode
 from internlm.core.context import global_context as gpc
+from internlm.core.context import ParallelMode
 from internlm.model.ops.rotary_emb import apply_rotary_emb
 from internlm.utils.parallel import is_using_isp
 

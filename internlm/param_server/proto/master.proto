@@ -1,0 +1,172 @@
+syntax = "proto3";
+
+package controlflow;
+
+service ControlFlowService {
+    // heartbeat bewteen ps and master
+    rpc PSHeartbeat(PSHeartbeatRequest) returns (PSHeartbeatResponse);
+
+    // heartbeat bewteen training worker and master
+    rpc ClientHeartbeat(ClientHeartbeatRequest) returns (ClientHeartbeatResponse);
+
+    // client update push status
+    rpc UpdatePushStatus(UpdatePushStatusRequest) returns (UpdatePushStatusResponse);
+
+    // ps update computing status
+    rpc UpdateComputeStatus(UpdateComputeStatusRequest) returns (UpdateComputeStatusResponse);
+
+    // client query whether ps finish computing weight
+    rpc QueryComputeStatus(QueryComputeStatusRequest) returns (QueryComputeStatusResponse);
+
+    // client access master to update pull status
+    rpc UpdatePullStatus(UpdatePullStatusRequest) returns (UpdatePullStatusResponse);
+
+    // client pull ckpt for resume
+    rpc UpdateClientCkpt(UpdateClientCkptRequest) returns (UpdateClientCkptResponse);
+
+    // client report weight factor
+    rpc UpdateClientWeightFactor(UpdateClientWeightFactorRequest) returns (UpdateClientWeightFactorResponse);
+
+    // ps update norm status
+    rpc UpdateNormStatus(UpdateNormStatusRequest) returns (UpdateNormStatusResponse);
+
+    // ps report group norm
+    rpc UpdatePSNorm(UpdatePSNormRequest) returns (UpdatePSNormResponse);
+
+    rpc QueryGlobalStatus(QueryGlobalStatusRequest) returns (QueryGlobalStatusResponse);
+
+}
+
+message PSHeartbeatRequest {
+    int32 ps_id = 1;
+}
+message PSHeartbeatResponse {
+}
+
+message ClientHeartbeatRequest {
+    int32 group_id = 1;
+}
+message ClientHeartbeatResponse {
+}
+
+enum PushStatus {
+    PUSH_STATUS_UNKNOWN = 0;
+    PUSH_STATUS_START = 1;
+    PUSH_STATUS_FINISH = 2;
+    PUSH_STATUS_FAIL = 3;
+    PUSH_STATUS_LOW_VERSION = 4;
+}
+enum OperatorType {
+    OPERATOR_TYPE_UNKNOWN = 0;
+    // client will push gradient to ps server
+    PUSH = 1;
+    // client will wait and retry
+    RETRY = 2;
+    // ignore current gradient push when ps server abnormal
+    IGNORE = 3;
+    // client will pull gradient from ps server
+    PULL = 4;
+    // finish
+    FINISH = 5;
+}
+message UpdatePushStatusRequest {
+    int32 group_id = 1;
+    PushStatus push_status = 2;
+    int64 consume_tokens = 3;
+    int64 version = 4;
+}
+message UpdatePushStatusResponse {
+    OperatorType op = 1;
+}
+
+enum ComputeStatus {
+    COMPUTE_STATUS_UNKNOWN = 0;
+    RECEIVING = 1;
+    COMPUTE_SUCCESS = 2;
+    COMPUTING = 3;
+    COMPUTE_FAIL = 4;
+}
+message UpdateComputeStatusRequest {
+    int32 ps_id = 1;
+    ComputeStatus compute_status = 2;
+}
+message UpdateComputeStatusResponse {
+}
+
+message QueryComputeStatusRequest {
+}
+message QueryComputeStatusResponse {
+    ComputeStatus compute_status = 1;
+}
+
+enum PullStatus {
+    PULL_STATUS_UNKNOWN = 0;
+    PULL_STATUS_START = 1;
+    PULL_STATUS_FINISH = 2;
+    PULL_STATUS_FAIL = 3;
+}
+message UpdatePullStatusRequest {
+    int32 group_id = 1;
+    PullStatus pull_status = 2;
+}
+message UpdatePullStatusResponse {
+    int64 version = 1;
+}
+
+message UpdateClientCkptRequest {
+    int32 group_id = 1;
+    PullStatus pull_status = 2;
+}
+message UpdateClientCkptResponse {
+    OperatorType op = 1;
+    int64 version = 2;
+}
+
+
+message UpdateClientWeightFactorRequest {
+    int32 group_id = 1;
+    float factor = 2;
+}
+message UpdateClientWeightFactorResponse {
+}
+
+
+enum NormStatus {
+    NORM_STATUS_UNKNOWN = 0;
+    NORM_SUCCESS = 11;
+    NORM_COMPUTING = 12;
+    NORM_FAIL = 13;
+}
+message UpdateNormStatusRequest {
+    int32 ps_id = 1;
+    NormStatus norm_status = 2;
+}
+message UpdateNormStatusResponse {
+}
+
+message GroupNorm {
+    int32 group_id = 1;
+    float norm = 2;
+}
+message UpdatePSNormRequest {
+    repeated GroupNorm items = 1;
+}
+message UpdatePSNormResponse {
+}
+
+
+message HistoryGlobalStatus {
+    string status_name = 1;
+    string start_time = 2;
+    string end_time = 3;
+}
+message CurrentGlobalStatus {
+    string status_name = 1;
+}
+message QueryGlobalStatusRequest {
+
+}
+message QueryGlobalStatusResponse {
+    CurrentGlobalStatus current_global_status = 1;
+    repeated HistoryGlobalStatus history_global_status_list = 2;
+}

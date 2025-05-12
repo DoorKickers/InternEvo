@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package ps;
+
+service ControlService {
+    rpc StartUpdateWeight(StartUpdateWeightRequest) returns (StartUpdateWeightResponse);
+    rpc UpdateGroupList(UpdateGroupListRequest) returns (UpdateGroupListResponse);
+    rpc FinishPullWeight(FinishPullWeightRequest) returns (FinishPullWeightResponse);
+    rpc StartComputeNorm(StartComputeNormRequest) returns (StartComputeNormResponse);
+}
+
+message GroupWeightFactor {
+    int32 group_id = 1;
+    float norm = 2;
+}
+message StartUpdateWeightRequest {
+    repeated int32 groups = 1;
+    repeated GroupWeightFactor factors = 2;
+    int32 version = 3;
+    int64 consume_tokens = 4;
+    bool save_ckpt = 5;
+    float clip_coef = 6;
+}
+
+message StartUpdateWeightResponse {
+}
+
+message UpdateGroupListRequest {
+    repeated int32 groups = 1;
+}
+message UpdateGroupListResponse {
+}
+
+message StartComputeNormRequest {
+    repeated int32 groups = 1;
+}
+message StartComputeNormResponse {
+}
+
+message FinishPullWeightRequest {
+}
+message FinishPullWeightResponse {
+}

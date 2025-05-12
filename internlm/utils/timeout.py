@@ -58,7 +58,7 @@ if ENABLE_TIMEOUT is not None:
     LLM_NCCL_TIMEOUT = datetime.timedelta(seconds=int(os.getenv("NCCL_TIMEOUT", str(60))))
 else:
     timeout_threshold_dict = dict.fromkeys(timeout_threshold_dict.keys(), 0)
-    LLM_NCCL_TIMEOUT = datetime.timedelta(seconds=1800)
+    LLM_NCCL_TIMEOUT = datetime.timedelta(seconds=4200)
 
 
 def try_get_gpc_rank():

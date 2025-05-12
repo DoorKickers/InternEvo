@@ -1,0 +1,28 @@
+
+syntax = "proto3";
+
+import "google/api/annotations.proto";
+service QueryService {
+    rpc QueryGlobalStatus(QueryGlobalStatusRequest) returns (QueryGlobalStatusResponse) {
+        option (google.api.http) = {
+            get: "/v1/globalstatus"
+        };
+    }
+}
+
+
+message HistoryGlobalStatus {
+    string status_name = 1;
+    string start_time = 2;
+    string end_time = 3;
+}
+message CurrentGlobalStatus {
+    string status_name = 1;
+}
+message QueryGlobalStatusRequest {
+
+}
+message QueryGlobalStatusResponse {
+    CurrentGlobalStatus current_global_status = 1;
+    repeated HistoryGlobalStatus history_global_status_list = 2;
+}
