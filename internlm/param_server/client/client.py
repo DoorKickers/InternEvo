@@ -29,6 +29,8 @@ from internlm.param_server.proto.master_pb2 import (
     UpdatePushStatusRequest,
     QueryGlobalStatusRequest,
     QueryGlobalStatusResponse,
+    UpdateMetricLineRequest,
+    UpdateMetricLineResponse,
 )
 
 class ParameterClient:
@@ -321,8 +323,10 @@ class ParameterClient:
             self.restart_zmq(ps_server)
         finally:
             return status
-
-
+        
+    def send_metric(self, metric_line: str):
+        request = UpdateMetricLineRequest(group_id=self.group_id, metric_line=metric_line)
+        self.master_stub.UpdateMetricLine(request)
 
     def shutdown(self):
         """Shut down client components gracefully."""

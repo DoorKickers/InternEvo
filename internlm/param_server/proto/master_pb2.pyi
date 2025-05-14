@@ -228,3 +228,15 @@ class QueryGlobalStatusResponse(_message.Message):
     current_global_status: CurrentGlobalStatus
     history_global_status_list: _containers.RepeatedCompositeFieldContainer[HistoryGlobalStatus]
     def __init__(self, current_global_status: _Optional[_Union[CurrentGlobalStatus, _Mapping]] = ..., history_global_status_list: _Optional[_Iterable[_Union[HistoryGlobalStatus, _Mapping]]] = ...) -> None: ...
+
+class UpdateMetricLineRequest(_message.Message):
+    __slots__ = ("group_id", "metric_line")
+    GROUP_ID_FIELD_NUMBER: _ClassVar[int]
+    METRIC_LINE_FIELD_NUMBER: _ClassVar[int]
+    group_id: int
+    metric_line: str
+    def __init__(self, group_id: _Optional[int] = ..., metric_line: _Optional[str] = ...) -> None: ...
+
+class UpdateMetricLineResponse(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...

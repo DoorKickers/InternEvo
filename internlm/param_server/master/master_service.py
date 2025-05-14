@@ -68,3 +68,8 @@ class MasterControlFlowServicer(master_pb2_grpc.ControlFlowServiceServicer):
     def QueryGlobalStatus(self, request, context):
         logger.info(f"receive platform query global status")
         return self.state_manager.query_global_status(request)
+    
+    @handle_value_error
+    def UpdateMetricLine(self, request, context):
+        logger.info(f"receive update metric line, {request.group_id=} {request.metric_line=}")
+        return self.state_manager.update_metric_line(request)

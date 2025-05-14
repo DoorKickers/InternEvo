@@ -1029,6 +1029,10 @@ def record_current_batch_training_metrics(
 
         logger.info(line)
 
+        from internlm.param_server.client.send_recv import send_metric_line
+        if gpc.config.use_ps:
+            send_metric_line(line)
+
         # if loss spike occurs, send alert info to feishu
         mm.monitor_loss_spike(
             alert_address=gpc.config.monitor.alert.feishu_alert_address,

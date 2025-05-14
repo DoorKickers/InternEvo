@@ -89,6 +89,11 @@ class ControlFlowServiceStub(object):
                 request_serializer=master__pb2.QueryGlobalStatusRequest.SerializeToString,
                 response_deserializer=master__pb2.QueryGlobalStatusResponse.FromString,
                 _registered_method=True)
+        self.UpdateMetricLine = channel.unary_unary(
+                '/controlflow.ControlFlowService/UpdateMetricLine',
+                request_serializer=master__pb2.UpdateMetricLineRequest.SerializeToString,
+                response_deserializer=master__pb2.UpdateMetricLineResponse.FromString,
+                _registered_method=True)
 
 
 class ControlFlowServiceServicer(object):
@@ -170,6 +175,12 @@ class ControlFlowServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def UpdateMetricLine(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ControlFlowServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -227,6 +238,11 @@ def add_ControlFlowServiceServicer_to_server(servicer, server):
                     servicer.QueryGlobalStatus,
                     request_deserializer=master__pb2.QueryGlobalStatusRequest.FromString,
                     response_serializer=master__pb2.QueryGlobalStatusResponse.SerializeToString,
+            ),
+            'UpdateMetricLine': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateMetricLine,
+                    request_deserializer=master__pb2.UpdateMetricLineRequest.FromString,
+                    response_serializer=master__pb2.UpdateMetricLineResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -526,6 +542,33 @@ class ControlFlowService(object):
             '/controlflow.ControlFlowService/QueryGlobalStatus',
             master__pb2.QueryGlobalStatusRequest.SerializeToString,
             master__pb2.QueryGlobalStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateMetricLine(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/controlflow.ControlFlowService/UpdateMetricLine',
+            master__pb2.UpdateMetricLineRequest.SerializeToString,
+            master__pb2.UpdateMetricLineResponse.FromString,
             options,
             channel_credentials,
             insecure,

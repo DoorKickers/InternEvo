@@ -40,7 +40,9 @@ from internlm.param_server.proto.master_pb2 import (
     UpdatePushStatusRequest,
     UpdatePushStatusResponse,
     QueryGlobalStatusRequest,
-    QueryGlobalStatusResponse
+    QueryGlobalStatusResponse,
+    UpdateMetricLineRequest,
+    UpdateMetricLineResponse,
 )
 from internlm.param_server.proto.ps_pb2 import (
     FinishPullWeightRequest,
@@ -425,6 +427,7 @@ class StateManager:
         self.version_manager = VersionManager()
 
         self.group_status = dict()
+        self.group_metric = dict()
 
         self.ps_state = WorkerState(config.PS_OFFLINE_THRESHOLD, name="ps")
         self.group_state = WorkerState(config.GROUPS_OFFLINE_THRESHOLD, name="group")
@@ -1196,12 +1199,12 @@ class StateManager:
     
     def get_alive_ps(self):
         with self.lock:
-            return repr(self.ps_state)
+            return list(self.ps_state.alive_workers.keys())
 
 
     def get_alive_group(self):
         with self.lock:
-            return repr(self.group_state)
+            return list(self.group_state.alive_workers.keys())
 
     def get_group_status(self, group_id = 0, last_of_n = 10):
         with self.lock:
@@ -1213,6 +1216,8 @@ class StateManager:
                 meta_event_list = sorted(self.push_state.status_history_dict.get(group_id, []) + self.pull_state.status_history_dict.get(group_id, []) + self.group_state.status_history_dict.get(group_id, []), key=lambda x: x[0])[-last_of_n:]
                 group_status = dict()
                 readable_event_list = []
+                total_time = 0
+                abnormal_time = 0
                 for i in range(1, len(meta_event_list)):
                     last_event = meta_event_list[i - 1]
                     current_event = meta_event_list[i]
@@ -1230,9 +1235,16 @@ class StateManager:
 
                     event_dict["start_timestamp"] = last_event[0]
                     event_dict["end_timestamp"] = current_event[0]
+
+                    total_time += event_dict["end_timestamp"] - event_dict["start_timestamp"] 
+
+                    if event_dict["event_name"] == "ABNORMAL":
+                        abnormal_time += event_dict["end_timestamp"] - event_dict["start_timestamp"]
+
                     readable_event_list.append(event_dict)
 
                 group_status["history_status_list"] = readable_event_list
+
                 if meta_event_list[-1][1] == "PULL_FINISH":
                     group_status["current_status"] = "TRAIN"
                 elif meta_event_list[-1][1] == "PUSH_START":
@@ -1243,8 +1255,22 @@ class StateManager:
                     group_status["current_status"] = "WAIT"
                 else:
                     group_status["current_status"] = "ABNORMAL"
+                
+                group_status["normal_ratio"] = round(1.0 - abnormal_time / total_time, 5) if total_time != 0 else 0.0
+                group_status["last_training_metric"] = self.group_metric[group_id][-1] if self.group_metric.get(group_id) else None
+
                 result[group_id] = group_status
 
             return result
+    
+    def update_metric_line(self, request: UpdateMetricLineRequest):
+        with self.lock:
+            print(type(UpdateMetricLineResponse()))
+            self.group_metric.setdefault(request.group_id, []).append(request.metric_line)
+            return UpdateMetricLineResponse()
+
+
+
+
 
 

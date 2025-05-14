@@ -35,6 +35,8 @@ service ControlFlowService {
 
     rpc QueryGlobalStatus(QueryGlobalStatusRequest) returns (QueryGlobalStatusResponse);
 
+    rpc UpdateMetricLine(UpdateMetricLineRequest) returns (UpdateMetricLineResponse);
+
 }
 
 message PSHeartbeatRequest {
@@ -169,4 +171,12 @@ message QueryGlobalStatusRequest {
 message QueryGlobalStatusResponse {
     CurrentGlobalStatus current_global_status = 1;
     repeated HistoryGlobalStatus history_global_status_list = 2;
+}
+
+message UpdateMetricLineRequest {
+    int32 group_id = 1;
+    string metric_line = 2;
+}
+
+message UpdateMetricLineResponse {
 }

@@ -26,6 +26,12 @@ current_status_begin_timestamp = time.time()
 status_history_list = []
 status = 0
 
+def send_metric_line(metric_line: str):
+    dp_rank = gpc.get_local_rank(ParallelMode.DATA)
+    tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
+    if dp_rank == 0 and tp_rank == 0 and gpc.is_last_rank(ParallelMode.PIPELINE):
+        client.send_metric(metric_line)
+
 def try_interact_with_param_server(model, optimizer, consume_tokens):
     gpc.consume_steps += 1
 
