@@ -9,7 +9,7 @@ ps_servers = {
     0: "127.0.0.1",
 }
 NUM_PS = len(ps_servers)
-NUM_LAYERS = 32
+NUM_LAYERS = 28
 
 MASTER_ADDR = "127.0.0.1"
 MASTER_PORT = 55500
@@ -20,7 +20,7 @@ GRPC_TIMEOUT = 10.0  # second
 UPDATE_METHOD = "partial_sync"  # sync or partial_sync or async_buffer
 
 GRACE_TIME_IN_SECOND = 60
-PARTIAL_SYNC_RATE_THRESHOLD = 1.0
+PARTIAL_SYNC_RATE_THRESHOLD = 0.8
 PARTIAL_SYNC_WAIT_TIME = 300  # second
 SOCKET_TIME_IN_SECOND = 300
 
@@ -37,17 +37,19 @@ CONSUME_TOKEN_WHEN_PS_SAVE_CKPT = 1024 * 1024 * 1024 * 1024  # 1B
 
 master_server = f"{MASTER_ADDR}:{MASTER_PORT}"
 grpc_servers = {ps_id: f"{server}:{GRPC_PORT}" for ps_id, server in ps_servers.items()}
-print("grpc_servers = ", grpc_servers)
 zmq_servers = {ps_id: f"tcp://{server}:{ZMQ_PORT}" for ps_id, server in ps_servers.items()}
 
+MLP_RATIO_7B = 2.6875
+MLP_RATIO_20B = 8 / 3
+MLP_RATIO_QWEN = 5.25
 model = dict(
     dtype=torch.bfloat16,
     num_layers=NUM_LAYERS,
-    hidden_size=4096,
-    vocab_size=92544,
-    num_attention_heads=32,
-    num_kv_attention_heads=32,
-    mlp_ratio=2.6875,
+    hidden_size=3584,
+    vocab_size=152064,
+    num_attention_heads=28,
+    num_kv_attention_heads=4,
+    mlp_ratio=MLP_RATIO_QWEN,
 )
 
 
@@ -95,6 +97,8 @@ def get_param_shapes(config):
     vocab_size = config.get("vocab_size")
 
     mlp_hidden_features = int(hidden_size * mlp_ratio)
+    multiple_of = 256
+    mlp_hidden_features = (mlp_hidden_features + 255) // 256 * 256
     # Compute per-head size
     attn_head_dim = hidden_size // num_attention_heads
     q_dim = attn_head_dim * num_attention_heads
@@ -116,6 +120,12 @@ def get_param_shapes(config):
         "norm.weight": (hidden_size,),  # Final normalization layer weight
         "tok_embeddings.weight": (vocab_size, hidden_size),  # Token embedding matrix
         "output.weight": (vocab_size, hidden_size),  # Output projection weight
+        "embed_tokens.weight": (vocab_size, hidden_size), # Token embedding matrix of qwen2
+        "attention.wq.bias": (q_dim,),
+        "attention.wk.bias": (kv_dim,),
+        "attention.wv.bias": (kv_dim,),
+        "attention.wo.bias": (hidden_size,),
+
     }
 
     return param_shapes
@@ -123,15 +133,16 @@ def get_param_shapes(config):
 
 ckpt = dict(
     auto_resume=False,
-    load_ckpt_path="/nvme/zhanglantian/14-data/InternEvo/convert_ckpt/model_tp0_pp0.pt",
+    # load_ckpt_path="/data/InternEvo-psserver/20B_ckpt/internlm2/1_merged/model_tp0_pp0.pt",
+    load_ckpt_path="/nvme/zhanglantian/new/my/InternEvo/ckpt_qwen2_7B_merged/model_tp0_pp0.pt",
     save_ckpt_path="./ps_ckpt",
 )
 layer_chunks = get_chunks(NUM_LAYERS, NUM_PS)
 param_shapes = get_param_shapes(model)
 optimizer = dict(
     name="nesterov",
-    lr=0.5,
-    momentum=0.6,
+    lr=0.7,
+    momentum=0.8,
 )
 
 grad = dict(

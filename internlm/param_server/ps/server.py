@@ -333,7 +333,7 @@ class ParameterServer:
                 if layer_idx == layer_id:
                     layer_state_dict[key] = value.clone().to(self.origin_dtype)
             else:
-                if layer_id == 0 and key.startswith("tok_embeddings"):
+                if layer_id == 0 and (key.startswith("tok_embeddings") or key.startswith("embed_tokens")):
                     layer_state_dict[key] = value.clone().to(self.origin_dtype)
                 elif layer_id == self.global_num_layers - 1 and (key.startswith("norm") or key.startswith("output")):
                     layer_state_dict[key] = value.clone().to(self.origin_dtype)
@@ -434,14 +434,9 @@ class ParameterServer:
     def heartbeat(self):
         successfully_connect = False
         while True:
-            print("22222222222222222")
             try:
-                print("3333333333333333333")
                 request = master_pb2.PSHeartbeatRequest(ps_id=self.ps_id)
-                print("4444444444444444")
-                response = self.master_stub.PSHeartbeat(request)
-                print("5555555555555555555")
-                print(response)
+                self.master_stub.PSHeartbeat(request)
                 if not successfully_connect:
                     successfully_connect = True
                     logger.info(f"Successfully connect to master {self.master_server}")

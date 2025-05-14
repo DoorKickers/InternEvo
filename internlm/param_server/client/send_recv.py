@@ -364,17 +364,33 @@ def recover_local_state(model, optimizer, recv_state_dict):
     dp_src = gpc.get_ranks_in_group(ParallelMode.DATA)[0]
     tp_world_size = gpc.get_world_size(ParallelMode.TENSOR)
 
-    for fqn, tensor in local_state_dict.items():
-        if "layer" in fqn:
-            assert fqn in map_fqn_local_to_global
-        global_fqn = map_fqn_local_to_global[fqn] if fqn in map_fqn_local_to_global else fqn
-        complete_size = map_layer_attr[global_fqn]["complete_size"]
 
+
+    for fqn, tensor in local_state_dict.items():
+        global_fqn = None
+        if "layer" in fqn:
+            if fqn.endswith(".bias"):
+                prefix = fqn[:-len(".bias")]
+                weight = prefix + ".weight"
+                assert weight in map_fqn_local_to_global, f"key {weight} not in dict"
+                global_fqn_weight = map_fqn_local_to_global[weight]
+                assert global_fqn_weight.endswith(".weight")
+                global_fqn = global_fqn_weight[:-len(".weight")] + ".bias"
+                map_fqn_local_to_global[fqn] = global_fqn
+                if global_fqn not in map_layer_attr:
+                    map_layer_attr[global_fqn] = {}
+                assert len(tensor.size()) == 1, "bias size should be 1-dim."
+                map_layer_attr[global_fqn]["complete_size"] = torch.Size((tensor.size()[0] * dist.get_world_size(gpc.get_group(ParallelMode.TENSOR)),))
+            else:
+                assert fqn in map_fqn_local_to_global, f"key {fqn} not in dict"
+        if global_fqn == None:
+            global_fqn = map_fqn_local_to_global[fqn] if fqn in map_fqn_local_to_global else fqn
+        complete_size = map_layer_attr[global_fqn]["complete_size"]
         recv_tensor = torch.empty_like(tensor)
         # dp0 tp0 scatter tensor list to other tp ranks
         if gpc.get_local_rank(ParallelMode.DATA) == 0:
             if gpc.get_global_rank() == tp_src:
-                assert global_fqn in recv_state_dict
+                assert global_fqn in recv_state_dict, f"{global_fqn} not in dict"
 
                 # find tp split dim
                 dim = -1

@@ -65,6 +65,7 @@ PIPELINE_SHARDING_INFO_QWEN = {
     "7B": {
         "1": [[(0, 28)]],
         "2": [[(0, 14)], [(14, 28)]],
+        "3": [[(0, 9)], [(9, 18)], [(18, 28)]]
     },
 }
 
@@ -170,7 +171,6 @@ def convert_tp_size(folder, saved_folder, target_tp_size):
             for tp in range(tp_size):
                 states_tp = llm_load(os.path.join(folder, f"model_tp{tp}_pp{pp}.pt"), map_location="cpu")
                 for k, v in states_tp.items():
-                    print("zlt tp key", k)
                     assert len(v.size()) < 3, "Only support 2D or 1D tensors."
                     candidate_states[tp // ratio][k].append(v)
 
@@ -223,7 +223,6 @@ def adaptive_param_load(folder, exist_parts, current_part, exist_params, first=F
                 should_load_layer_index = range(start - exist_start, min(end, exist_end) - exist_start)
                 for idx in should_load_layer_index:
                     for key in exist_keys:
-                        print("zlt pp key", key)
                         if f"layers.{idx}." in key:
                             prefix = key.split(".")[:1]
                             prefix.append(str(key_index))

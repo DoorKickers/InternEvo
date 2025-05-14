@@ -14,7 +14,9 @@ NUM_LAYER = 28
 MODEL_ONLY_FOLDER = "local:llm_ckpts_qwen2/xxxx/"
 # Ckpt folder format:
 # fs: 'local:/mnt/nfs/XXX'
-SAVE_CKPT_FOLDER = "local:llm_ckpts_qwen2"
+SAVE_CKPT_FOLDER = "local:./ckpt_qwen2_7B"
+
+sync_step = 3
 
 # boto3 Ckpt folder format:
 # import os
@@ -30,7 +32,7 @@ ckpt = dict(
     # 2. the 'content‘ means what states will be loaded, support: "model", "sampler", "optimizer", "scheduler", "all"
     # 3. the ’ckpt_type‘ means the type of checkpoint to be loaded, support: "internevo", "hf", or other custom-defined
     # load function such as "llama"
-    load_ckpt_info=dict(path=MODEL_ONLY_FOLDER, content=("model",), ckpt_type="hf"),
+    load_ckpt_info=dict(path=MODEL_ONLY_FOLDER, content=("model",), ckpt_type="internevo"),
     # 'auto_resume' is designed to automatically load the latest checkpoint from 'save_ckpt_folder' when encountering
     # training interruptions/hangs caused by hardware failures, using a scheduling system (such as k8s/slurm)
     # with an automatic restart mechanism upon training reboot.
@@ -45,20 +47,24 @@ ckpt = dict(
     oss_snapshot_freq=int(CHECKPOINT_EVERY / 2),  # snapshot ckpt save frequency.
 )
 
+TRAIN_FOLDER = "/data/RedPajama-Data-1T-Sample-processed"
+TRAIN_FOLDER = "/data/datasets/TinyStories"
 TRAIN_FOLDER = None
 VALID_FOLDER = None  # "/path/to/dataset"
 data = dict(
+    see=456,
+    # type="streaming",
+    # tokenizer_path="/data/InternEvo-psserver/configs/hf-qwen2-tokenizer",
     seq_len=SEQ_LEN,
     # micro_num means the number of micro_batch contained in one gradient update
-    micro_num=4,
+    micro_num=16,
     # packed_length = micro_bsz * SEQ_LEN
     micro_bsz=1,
     # defaults to the value of micro_num
     valid_micro_num=4,
-    # defaults to 0, means disable evaluate
-    valid_every=0,
+    # defaults to 0, means disable evaluate valid_every=0,
     pack_sample_into_one=False,
-    total_steps=20,
+    total_steps=10,
     skip_batches="",
     # rampup_batch_size (str): A string with three space-separated integers representing the
     #       starting batch size, the increment, and the number of steps between
@@ -132,7 +138,7 @@ beta2_scheduler = dict(
 
 use_fp32_norm = False
 model = dict(
-    checkpoint=False,
+    checkpoint=1.0,
     num_chunks=1,
     num_attention_heads=NUM_ATTENTION_HEAD,
     num_kv_attention_heads=NUM_KV_ATTENTION_HEAD,
@@ -149,7 +155,7 @@ model = dict(
     dtype="torch.bfloat16",
     norm_type="rmsnorm",
     layer_norm_epsilon=1e-6,
-    use_flash_attn=True,
+    use_flash_attn=False,
     # Whether the odd and even columns of the query and key in the model are normally interleaved.
     # If it's True, the model's odd and even columns are normally ordered; if it's False,
     # it means that the model has prematurely concatenated all odd columns and even columns in front
@@ -189,8 +195,8 @@ weight parallel (dict):
 """
 parallel = dict(
     zero1=dict(size=-1),
-    tensor=dict(size=1, mode="mtp"),
-    pipeline=dict(size=1, interleaved_overlap=True),
+    tensor=dict(size=2, mode="mtp"),
+    pipeline=dict(size=3, interleaved_overlap=True),
     weight=dict(size=1, overlap=True),
 )
 

@@ -374,6 +374,7 @@ class Qwen2(BaseModel):
         multiple_of: int = 256,
         scale_attn_weights: bool = False,  # Qwen1
         use_logn_attn: bool = False,  # Qwen1
+        enable_qkv_fusion = False,
     ):
         super().__init__()
 

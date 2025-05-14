@@ -26,7 +26,7 @@ def load_model(ckpt_path, num_layers, layer_chunk, param_shapes):
         if key.startswith("layers"):
             layer_idx = int(key.split(".")[1])
         else:
-            if key.startswith("tok_embeddings"):
+            if key.startswith("tok_embeddings") or key.startswith("embed_tokens"):
                 layer_idx = 0
             elif key.startswith("norm") or key.startswith("output"):
                 layer_idx = num_layers - 1
