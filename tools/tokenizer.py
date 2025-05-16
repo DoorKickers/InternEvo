@@ -10,6 +10,7 @@ model_path = os.path.join(current_dir, "tokenizer_internlm.model")
 sys.path.append(os.path.join(current_dir, "../transformers"))
 from internlm_model import InternLMTokenizer  # noqa: E402 # pylint: disable=C0413
 
+from transformers import AutoTokenizer
 tokenizer = InternLMTokenizer(vocab_file=model_path, add_bos_token=True, add_eos_token=True)
 
 
@@ -67,7 +68,7 @@ def prepare_meta(bin_output_path: str):
     meta_fp = bin_output_path + ".meta"
     # save the generated meta information
     with open(meta_fp, "wb") as f:
-        meta = np.array(meta, dtype=np.int32)
+        meta = np.array(meta, dtype=np.int64)
         np.save(f, meta)
 
 
@@ -112,6 +113,11 @@ def text2bin(text_input_path: str, bin_output_path: str):
                 # encode the str and write into bin
                 write_bin(line, bin_file)
 
+def setup_tokenizer(tokenizer_path):
+    if tokenizer_path is None:
+        return
+    global tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -122,6 +128,7 @@ def parse_args():
         help="Path to the input text file.",
     )
     parser.add_argument("--bin_output_path", type=str, required=True, help="Path to the output bin file.")
+    parser.add_argument("--tokenizer_path", type=str, default=None, help="Path to tokenizer, if not set, InternLMTokenizer will be used")
 
     return parser.parse_args()
 
@@ -129,6 +136,8 @@ def parse_args():
 def main():
     # parse arguments
     args = parse_args()
+
+    setup_tokenizer(args.tokenizer_path)
 
     text2bin(args.text_input_path, args.bin_output_path)
     print(f"Successfully converted {args.text_input_path} to {args.bin_output_path}")
