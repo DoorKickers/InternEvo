@@ -207,6 +207,7 @@ class StreamingDatasetPackSampleWithPad(Dataset):
                     "labels": labels,
                     "type_ids": [0] * (self.micro_bsz * self.seq_len),
                 }
+        self.senior_iterator = iter(self)
 
     def __len__(self):
         return sys.maxsize
@@ -286,6 +287,7 @@ class StreamingDatasetPackSampleIntoOneWithCut(Dataset):
                 "labels": labels,
                 "type_ids": [0] * (self.micro_bsz * self.seq_len),
             }
+        self.senior_iterator = iter(self)
 
     def __len__(self):
         return sys.maxsize
