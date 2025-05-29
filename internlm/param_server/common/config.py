@@ -133,9 +133,9 @@ def get_param_shapes(config):
     vocab_size = config.get("vocab_size")
 
     mlp_hidden_features = int(hidden_size * mlp_ratio)
-    if model_type.startswith("QWEN"):
+    if model_type.startswith("QWEN_2"):
         multiple_of = 256
-        mlp_hidden_features = (mlp_hidden_features + 255) // 256 * 256
+        mlp_hidden_features = (mlp_hidden_features + multiple_of - 1) // multiple_of * multiple_of
     # Compute per-head size
     attn_head_dim = config.get("head_dim")
     q_dim = attn_head_dim * num_attention_heads
