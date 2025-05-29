@@ -2,19 +2,21 @@ import random
 
 import torch
 
+import os
+
+
 random.seed(0)
 
 
 ps_servers = {
-    0: "127.0.0.1",
+    0: "10.10.41.41",
 }
 NUM_PS = len(ps_servers)
-NUM_LAYERS = 28
 
-MASTER_ADDR = "127.0.0.1"
+MASTER_ADDR = "10.10.41.41"
 MASTER_PORT = 55500
-ZMQ_PORT = 55502
-GRPC_PORT = 55501
+ZMQ_PORT = 55503
+GRPC_PORT = 55504
 GRPC_TIMEOUT = 10.0  # second
 
 UPDATE_METHOD = "partial_sync"  # sync or partial_sync or async_buffer
@@ -39,17 +41,51 @@ master_server = f"{MASTER_ADDR}:{MASTER_PORT}"
 grpc_servers = {ps_id: f"{server}:{GRPC_PORT}" for ps_id, server in ps_servers.items()}
 zmq_servers = {ps_id: f"tcp://{server}:{ZMQ_PORT}" for ps_id, server in ps_servers.items()}
 
-MLP_RATIO_7B = 2.6875
-MLP_RATIO_20B = 8 / 3
-MLP_RATIO_QWEN = 5.25
+
+model_type = os.environ.get("MODEL_TYPE", None)
+MODEL_TYPE_LIST = ["INTERNLM_2_7B", "QWEN_2_7B", "LLAMA_2_7B", "QWEN_3_30B"]
+MODEL_PARAM_DICT = dict()
+MODEL_PARAM_DICT["INTERNLM_2_7B"] = dict()
+MODEL_PARAM_DICT["INTERNLM_2_7B"]["NUM_LAYERS"] = 32
+MODEL_PARAM_DICT["INTERNLM_2_7B"]["MLP_RATIO"] = 3.5
+MODEL_PARAM_DICT["INTERNLM_2_7B"]["HIDDEN_SIZE"] = 4096
+MODEL_PARAM_DICT["INTERNLM_2_7B"]["NUM_ATTENTION_HEAD"] = 32
+MODEL_PARAM_DICT["INTERNLM_2_7B"]["NUM_KV_ATTENTION_HEAD"] = 8
+MODEL_PARAM_DICT["INTERNLM_2_7B"]["VOCAB_SIZE"] = 92544
+MODEL_PARAM_DICT["INTERNLM_2_7B"]["HEAD_DIM"] = 128
+
+
+MODEL_PARAM_DICT = dict()
+MODEL_PARAM_DICT["QWEN_3_30B"] = dict()
+MODEL_PARAM_DICT["QWEN_3_30B"]["NUM_LAYERS"] = 48
+MODEL_PARAM_DICT["QWEN_3_30B"]["MLP_RATIO"] = 768 / 2048
+MODEL_PARAM_DICT["QWEN_3_30B"]["HIDDEN_SIZE"] = 2048
+MODEL_PARAM_DICT["QWEN_3_30B"]["NUM_ATTENTION_HEAD"] = 32
+MODEL_PARAM_DICT["QWEN_3_30B"]["NUM_KV_ATTENTION_HEAD"] = 4
+MODEL_PARAM_DICT["QWEN_3_30B"]["VOCAB_SIZE"] = 151936
+MODEL_PARAM_DICT["QWEN_3_30B"]["HEAD_DIM"] = 128
+
+
+if model_type not in MODEL_TYPE_LIST:
+    model_type = "INTERNLM_2_7B"
+model_type = "QWEN_3_30B"
+NUM_LAYERS = MODEL_PARAM_DICT[model_type]["NUM_LAYERS"]
+MLP_RATIO = MODEL_PARAM_DICT[model_type]["MLP_RATIO"]
+HIDDEN_SIZE = MODEL_PARAM_DICT[model_type]["HIDDEN_SIZE"]
+NUM_ATTENTION_HEAD = MODEL_PARAM_DICT[model_type]["NUM_ATTENTION_HEAD"]
+NUM_KV_ATTENTION_HEAD = MODEL_PARAM_DICT[model_type]["NUM_KV_ATTENTION_HEAD"]
+VOCAB_SIZE = MODEL_PARAM_DICT[model_type]["VOCAB_SIZE"]
+HEAD_DIM = MODEL_PARAM_DICT[model_type]["HEAD_DIM"]
+
 model = dict(
     dtype=torch.bfloat16,
     num_layers=NUM_LAYERS,
-    hidden_size=3584,
-    vocab_size=152064,
-    num_attention_heads=28,
-    num_kv_attention_heads=4,
-    mlp_ratio=MLP_RATIO_QWEN,
+    hidden_size=HIDDEN_SIZE,
+    vocab_size=VOCAB_SIZE,
+    num_attention_heads=NUM_ATTENTION_HEAD,
+    num_kv_attention_heads=NUM_KV_ATTENTION_HEAD,
+    mlp_ratio=MLP_RATIO,
+    head_dim=HEAD_DIM,
 )
 
 
@@ -97,10 +133,11 @@ def get_param_shapes(config):
     vocab_size = config.get("vocab_size")
 
     mlp_hidden_features = int(hidden_size * mlp_ratio)
-    multiple_of = 256
-    mlp_hidden_features = (mlp_hidden_features + 255) // 256 * 256
+    if model_type.startswith("QWEN"):
+        multiple_of = 256
+        mlp_hidden_features = (mlp_hidden_features + 255) // 256 * 256
     # Compute per-head size
-    attn_head_dim = hidden_size // num_attention_heads
+    attn_head_dim = config.get("head_dim")
     q_dim = attn_head_dim * num_attention_heads
     kv_dim = attn_head_dim * num_kv_attention_heads
 
@@ -112,7 +149,7 @@ def get_param_shapes(config):
         "attention.wq.weight": (q_dim, hidden_size),  # Query weight for attention
         "attention.wk.weight": (kv_dim, hidden_size),  # Key weight for attention
         "attention.wv.weight": (kv_dim, hidden_size),  # Value weight for attention
-        "attention.wo.weight": (hidden_size, hidden_size),  # Output projection weight for attention
+        "attention.wo.weight": (hidden_size, q_dim),  # Output projection weight for attention
         "feed_forward.w1.weight": (mlp_hidden_features, hidden_size),  # MLP first layer weight
         "feed_forward.w3.weight": (mlp_hidden_features, hidden_size),  # MLP third layer weight
         "feed_forward.w2.weight": (hidden_size, mlp_hidden_features),  # MLP second layer weight
@@ -124,8 +161,13 @@ def get_param_shapes(config):
         "attention.wq.bias": (q_dim,),
         "attention.wk.bias": (kv_dim,),
         "attention.wv.bias": (kv_dim,),
-        "attention.wo.bias": (hidden_size,),
-
+        "attention.wo.bias": (q_dim,),
+        "attention.k_norm.weight": (attn_head_dim,),
+        "attention.q_norm.weight": (attn_head_dim,),
+        "feed_forward.moe_layer.gate.wg.weight": (attn_head_dim, hidden_size),
+        "w1.weight": (mlp_ratio * hidden_size, hidden_size),
+        "w2.weight": (hidden_size, mlp_ratio * hidden_size),
+        "w3.weight": (mlp_ratio * hidden_size, hidden_size),
     }
 
     return param_shapes
@@ -134,14 +176,15 @@ def get_param_shapes(config):
 ckpt = dict(
     auto_resume=False,
     # load_ckpt_path="/data/InternEvo-psserver/20B_ckpt/internlm2/1_merged/model_tp0_pp0.pt",
-    load_ckpt_path="/nvme/zhanglantian/new/my/InternEvo/ckpt_qwen2_7B_merged/model_tp0_pp0.pt",
+    # load_ckpt_path="/datapool/caikun/ckpt/internlm2_7b_ckpt/model_tp0_pp0.pt",
+    load_ckpt_path="/datapool/caikun/ckpt/qwen3_30b_a3b/model_wp0_pp0.pt",
     save_ckpt_path="./ps_ckpt",
 )
 layer_chunks = get_chunks(NUM_LAYERS, NUM_PS)
 param_shapes = get_param_shapes(model)
 optimizer = dict(
     name="nesterov",
-    lr=0.7,
+    lr=0.9,
     momentum=0.8,
 )
 
