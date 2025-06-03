@@ -328,15 +328,18 @@ class ParameterServer:
     def get_layer_state_dict(self, layer_id: int) -> Dict[str, torch.Tensor]:
         layer_state_dict = {}
         for key, value in self.model_state_dict.items():
+            dtype = self.origin_dtype
+            if "feed_forward.moe_layer.gate.wg.weight" in key:
+                dtype = torch.float32
             if key.startswith("layers"):
                 layer_idx = int(key.split(".")[1])
                 if layer_idx == layer_id:
-                    layer_state_dict[key] = value.clone().to(self.origin_dtype)
+                    layer_state_dict[key] = value.clone().to(dtype)
             else:
                 if layer_id == 0 and (key.startswith("tok_embeddings") or key.startswith("embed_tokens")):
-                    layer_state_dict[key] = value.clone().to(self.origin_dtype)
+                    layer_state_dict[key] = value.clone().to(dtype)
                 elif layer_id == self.global_num_layers - 1 and (key.startswith("norm") or key.startswith("output")):
-                    layer_state_dict[key] = value.clone().to(self.origin_dtype)
+                    layer_state_dict[key] = value.clone().to(dtype)
         return layer_state_dict
 
     def compute_pseudo_gradient_naive(self, groups: List[int]) -> Dict[str, torch.Tensor]:

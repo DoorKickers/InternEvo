@@ -49,6 +49,8 @@ def check_state_dict(state_dict, param_shapes):
             param_key = ".".join(key_split[2:])
         else:
             param_key = key
+        if "experts" in key:
+            param_key = key[-9:]
         assert (
             value.shape == param_shapes[param_key]
         ), f"Shape mismatch for parameter {key}, expected {param_shapes[param_key]}, got {value.shape}"

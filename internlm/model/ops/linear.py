@@ -31,7 +31,23 @@ except (ModuleNotFoundError, ImportError):
 
         gmm_ops = GMMOpBuilder().load()
     except (ModuleNotFoundError, ImportError):
-        gmm_ops = None
+        def gmm(a, b, batch_sizes, trans_a=False, trans_b=False):
+            batch_sizes = batch_sizes.numpy()
+            out = []
+            start = 0
+            b_dim = b.dim()
+            for i, size in enumerate(batch_sizes):
+                if b_dim == 3:
+                    rhs = b[i, :, :].t() if trans_b else b[i, :, :]
+                else:
+                    rhs = b[start:start + size, :].t() if trans_b else b[start:start + size, :]
+
+                lhs = a[start:start + size, :].t() if trans_a else a[start:start + size, :]
+                out.append(lhs @ rhs)
+                start += size
+            return torch.cat(out)
+
+        gmm_ops = gmm
 
 internlm_accelerator = get_accelerator()
 

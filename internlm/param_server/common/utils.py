@@ -90,15 +90,15 @@ def serialize(tensor: torch.Tensor) -> bytes:
     ptr = ctypes.cast(address, ctypes.POINTER(byte_array_type))
     byte_array = bytes(ptr.contents)
     end_ts = time.time()
-    logger.info(f"serialize success, cost: {end_ts-start_ts:.3f}, length: {length}")
+    # logger.info(f"serialize success, cost: {end_ts-start_ts:.3f}, length: {length}")
     return byte_array
 
 
-def deserialize(data: bytes, shape: List[int]) -> torch.Tensor:
+def deserialize(data: bytes, shape: List[int], dtype=torch.bfloat16) -> torch.Tensor:
     start_ts = time.time()
-    recovered_tensor = torch.frombuffer(data, dtype=torch.bfloat16).reshape(shape)
+    recovered_tensor = torch.frombuffer(data, dtype=dtype).reshape(shape)
     end_ts = time.time()
-    logger.info(f"deserialize success, cost: {end_ts-start_ts:.3f}. length: {len(data)}")
+    # logger.info(f"deserialize success, cost: {end_ts-start_ts:.3f}. length: {len(data)}")
     return recovered_tensor
 
 
@@ -166,7 +166,14 @@ def deserialize_layer(group_id: int, layer_id: int, message_parts: List[bytes]) 
         tensor_data = b"".join(message_parts[start_idx : start_idx+chunk_len])
         start_idx += chunk_len
         total_len += len(tensor_data)
-        state_dict[key] = deserialize(tensor_data, shape)
+        try:
+            dtype = torch.bfloat16
+            if "feed_forward.moe_layer.gate.wg.weight" in key:
+                dtype = torch.float32
+            state_dict[key] = deserialize(tensor_data, shape, dtype)
+        except Exception as e:
+            logger.error(f"deserialize fail, {shape=} {len(tensor_data)=} {key=}")
+            raise
 
     if data_size != total_len:
         logger.warning(

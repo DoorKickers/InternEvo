@@ -1,3 +1,5 @@
+import os
+
 JOB_NAME = "qwen3_30B_A3B"
 model_type = "QWEN3MOE"
 DO_ALERT = False
@@ -48,10 +50,13 @@ ckpt = dict(
     oss_snapshot_freq=int(CHECKPOINT_EVERY / 2),  # snapshot ckpt save frequency.
 )
 
-TRAIN_FOLDER = None  # "/path/to/dataset"
+TRAIN_FOLDER = "/datapool/caikun/datasets/RedPajama-Data-1T-Sample" # "/path/to/dataset"
 VALID_FOLDER = None  # "/path/to/dataset"
 data = dict(
+    seed=os.environ.get("seed", 1),
     seq_len=SEQ_LEN,
+    type="streaming",
+    tokenizer_path='./qwen3_tokenizer',
     # micro_num means the number of micro_batch contained in one gradient update
     micro_num=4,
     # packed_length = micro_bsz * SEQ_LEN
@@ -59,7 +64,7 @@ data = dict(
     # defaults to the value of micro_num
     valid_micro_num=4,
     # defaults to 0, means disable evaluate
-    valid_every=50,
+    valid_every=0,
     pack_sample_into_one=False,
     total_steps=50000,
     skip_batches="",
@@ -136,7 +141,7 @@ beta2_scheduler = dict(
 
 use_fp32_norm = False
 model = dict(
-    checkpoint=1,  # The proportion of layers for activation aheckpointing, the optional value are True/False/[0-1]
+    checkpoint=0.5,  # The proportion of layers for activation aheckpointing, the optional value are True/False/[0-1]
     num_attention_heads=NUM_ATTENTION_HEAD,
     num_kv_attention_heads=NUM_KV_ATTENTION_HEAD,
     max_position_embeddings=40960,
@@ -175,6 +180,7 @@ model = dict(
         scoring_func="softmax",
         routed_scaling_factor=1.0,
     ),
+    qkv_bias=False,
 )
 """
 zero1 parallel (dict):
@@ -212,10 +218,10 @@ expert weight parallel (dict):
 parallel = dict(
     zero1=dict(size=-1),
     tensor=dict(size=1, mode="isp"),
-    pipeline=dict(size=1, interleaved_overlap=True),
-    weight=dict(size=8, overlap=True),
+    pipeline=dict(size=2, interleaved_overlap=True),
+    weight=dict(size=1, overlap=True),
     expert=dict(size=8, no_tp=True),
-    expert_weight=dict(size=2, overlap=True),
+    expert_weight=dict(size=1, overlap=True),
 )
 
 cudnn_deterministic = False
@@ -233,3 +239,5 @@ monitor = dict(
         queue_max_length=10,
     ),
 )
+
+sync_step = 16

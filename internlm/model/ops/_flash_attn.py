@@ -76,10 +76,10 @@ class FlashAttnVarlenKVPackedFunc_V263(torch.autograd.Function):
                 softmax_scale,
                 causal=causal,
                 window_size=window_size,
-                softcap=softcap,
+                #softcap=softcap,
                 alibi_slopes=alibi_slopes,
                 return_softmax=return_softmax and dropout_p > 0,
-                block_table=None,
+                #block_table=None,
             )
 
         # store attn forward output to avoid re-computation of attn when activation checkpoint is enabled
@@ -124,10 +124,10 @@ class FlashAttnVarlenKVPackedFunc_V263(torch.autograd.Function):
             ctx.softmax_scale,
             ctx.causal,
             ctx.window_size,
-            ctx.softcap,
             ctx.alibi_slopes,
             ctx.deterministic,
             rng_state=rng_state,
+            #softcap=ctx.softcap,
         )
         dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
         dkv = dkv[..., : dout.shape[-1]]
@@ -294,12 +294,15 @@ def flash_attn_varlen_kvpacked_func(
             pattern (negative means that location was dropped, nonnegative means it was kept).
     """
 
+    assert gpu_flash_attn_impl is True
     assert gpu_flash_attn_impl is True and flash_attn.__version__ in [
         "2.2.1",
+        "2.4.2",
+        "2.5.3",
         "2.6.3",
     ], "flash-attn should be installed and version must be v2.2.1 or v2.6.3"
 
-    if flash_attn.__version__ == "2.2.1":
+    if flash_attn.__version__ in ["2.2.1", ]:
         return FlashAttnVarlenKVPackedFunc_V221.apply(
             q,
             kv,
