@@ -174,15 +174,28 @@ def client_send(model, consume_tokens, dynamic_config):
         random.shuffle(layer_idxs)
         logger.info(f"shuffle send layer idx: {layer_idxs}")
 
-        for layer_id in layer_idxs:
-            layer_state_dict = send_state_dict[layer_id]
-            ps_id = get_ps_id(layer_id, dynamic_config.layer_chunks)
-            if ps_id == -1:
-                raise ValueError(f"Failed to find PS ID for layer {layer_id}.")
-            ps_server = dynamic_config.zmq_servers[ps_id]
-            send_status = client.send_update(ps_server, layer_id, layer_state_dict)
-            if send_status == 1:
-                break
+        if config.USE_DLSLIME_RDMA_TRANSFER:
+            ps_server_state_dict = {zmq_server: {} for _, zmq_server in dynamic_config.zmq_servers.items()}
+            for layer_id in layer_idxs:
+                layer_state_dict = send_state_dict[layer_id]
+                ps_id = get_ps_id(layer_id, dynamic_config.layer_chunks)
+                if ps_id == -1:
+                    raise ValueError(f"Failed to find PS ID for layer {layer_id}.")
+                ps_server = dynamic_config.zmq_servers[ps_id]
+                ps_server_state_dict[ps_server][int(layer_id)] = layer_state_dict
+            for ps_server, p_state_dict in ps_server_state_dict.items():
+                client.send_update_rdma(ps_server, p_state_dict)
+        else:
+            for layer_id in layer_idxs:
+                layer_state_dict = send_state_dict[layer_id]
+                ps_id = get_ps_id(layer_id, dynamic_config.layer_chunks)
+                if ps_id == -1:
+                    raise ValueError(f"Failed to find PS ID for layer {layer_id}.")
+                ps_server = dynamic_config.zmq_servers[ps_id]
+                send_status = client.send_update(ps_server, layer_id, layer_state_dict)
+                if send_status == 1:
+                    break
+
         if gpc.is_using_parallel_mode(ParallelMode.PIPELINE):
             dist.barrier(group=gpc.get_group(ParallelMode.PIPELINE))
             if gpc.is_last_rank(ParallelMode.PIPELINE):
@@ -246,34 +259,55 @@ def client_recv(model, optimizer: torch.optim.Optimizer = None, request_for_ckpt
     tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
     wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
     wdp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
+    if config.USE_DLSLIME_RDMA_TRANSFER:
+        send_state_dict = get_send_state_dict(model)
 
     # Receive updates for each layer
     all_recv_state_dict = {}
     recv_status = 0
     if dp_rank == 0 and tp_rank == 0 and wp_rank == 0 and wdp_rank == 0:
-        for layer_id in range(model.first_layer, model.last_layer):
-            ps_id = get_ps_id(layer_id, dynamic_config.layer_chunks)
-            if ps_id == -1:
-                raise ValueError(f"Failed to find PS ID for layer {layer_id}.")
-            ps_server = dynamic_config.zmq_servers[ps_id]
+        if config.USE_DLSLIME_RDMA_TRANSFER:
+            logger.info("begin dlslime RDMA RECV")
+            layer_idxs = list(send_state_dict.keys())
+            random.shuffle(layer_idxs)
+            logger.info(f"shuffle send layer idx: {layer_idxs}")
+            ps_server_state_dict = {zmq_server: {} for _, zmq_server in dynamic_config.zmq_servers.items()}
+            for layer_id in layer_idxs:
+                layer_state_dict = send_state_dict[layer_id]
+                ps_id = get_ps_id(layer_id, dynamic_config.layer_chunks)
+                if ps_id == -1:
+                    raise ValueError(f"Failed to find PS ID for layer {layer_id}.")
+                ps_server = dynamic_config.zmq_servers[ps_id]
+                ps_server_state_dict[ps_server][int(layer_id)] = layer_state_dict
+                all_recv_state_dict.update(layer_state_dict)
+            for ps_server, p_state_dict in ps_server_state_dict.items():
+                client.recv_update_rdma(ps_server, p_state_dict)
+            # logger.info(f"Successfully received updates for layer {layer_id}.")
+        else:
+            for layer_id in range(model.first_layer, model.last_layer):
+                
+                ps_id = get_ps_id(layer_id, dynamic_config.layer_chunks)
+                if ps_id == -1:
+                    raise ValueError(f"Failed to find PS ID for layer {layer_id}.")
+                ps_server = dynamic_config.zmq_servers[ps_id]
 
-            # try to recive layer statet dict
-            recv_state_dict = None
-            retry_time = 0
-            while recv_state_dict is None and retry_time < 3:
-                _, recv_state_dict = client.receive_updates(ps_server, layer_id)
-                retry_time += 1
-                time.sleep(0.5)
+                # try to recive layer statet dict
+                recv_state_dict = None
+                retry_time = 0
+                while recv_state_dict is None and retry_time < 3:
+                    _, recv_state_dict = client.receive_updates(ps_server, layer_id)
+                    retry_time += 1
+                    time.sleep(0.5)
 
-            if recv_state_dict is None:
-                logger.error(
-                    f"Error: Unsuccessfully received updates for layer {layer_id}. The recv_state_dict is None."
-                )
-                recv_status = 1
-                break
+                if recv_state_dict is None:
+                    logger.error(
+                        f"Error: Unsuccessfully received updates for layer {layer_id}. The recv_state_dict is None."
+                    )
+                    recv_status = 1
+                    break
 
-            all_recv_state_dict.update(recv_state_dict)
-            logger.info(f"Successfully received updates for layer {layer_id}.")
+                all_recv_state_dict.update(recv_state_dict)
+                logger.info(f"Successfully received updates for layer {layer_id}.")
 
         if gpc.is_using_parallel_mode(ParallelMode.PIPELINE):
             dist.barrier(group=gpc.get_group(ParallelMode.PIPELINE))
