@@ -188,6 +188,7 @@ optimizer = dict(
     momentum=0.8,
 )
 
+CHECK_GROUP_NORMS = True
 grad = dict(
     use_ewma_outlier=False,
     ewma=dict(
@@ -196,5 +197,5 @@ grad = dict(
         base_threshold=3,
     ),
     use_weighted_avg=True,
-    clip_pseudo_grad=1.0,
+    clip_pseudo_grad=1.0 if CHECK_GROUP_NORMS else None,
 )
