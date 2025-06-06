@@ -9,9 +9,11 @@ import grpc
 import torch
 import zmq
 
+import json
 # Configure logging
 from loguru import logger
 
+from internlm.core.context import ParallelMode, global_context as gpc  # noqa: E402
 from internlm.param_server.common import config
 from internlm.param_server.common.utils import CustomServiceStub, serialize_layer, deserialize_layer
 from internlm.param_server.proto import master_pb2_grpc
@@ -32,6 +34,9 @@ from internlm.param_server.proto.master_pb2 import (
     UpdateMetricLineRequest,
     UpdateMetricLineResponse,
 )
+
+from internlm.param_server.transport.rdma_transport import rdma_endpoint_ctx, endpoint_info_serialize, endpoint_info_deserialize
+
 
 class ParameterClient:
     """
@@ -89,7 +94,42 @@ class ParameterClient:
             self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
             self.heartbeat_thread.start()
             logger.info("Heartbeat thread started.")
-        
+        if config.USE_DLSLIME_RDMA_TRANSFER:
+            self.rdma_connection()
+
+    def rdma_connection(self):
+        dp_rank = gpc.get_local_rank(ParallelMode.DATA)
+        tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
+        wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
+        wdp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
+        global_rank = gpc.get_global_rank()
+
+        dynamic_config = importlib.reload(config)
+        assert dynamic_config is not None
+        dynamic_config
+
+        if dp_rank == 0 and tp_rank == 0 and wp_rank ==0 and wdp_rank == 0:
+            dynamic_config.layer_chunks
+            for _, zmq_server in dynamic_config.zmq_servers.items():
+                with self.lock:
+                    # Step 1: create RDMA endpoint
+                    endpoint = rdma_endpoint_ctx().create(self.worker_id, self.group_id, global_rank, zmq_server)
+                    # Step 2: send RDMA endpoint info and connect
+                    self.zmq_socket.connect(zmq_server)
+                    send_parts = [
+                        self.worker_id.encode("utf-8"),
+                        b"RDMA_CONNECT",
+                        str(self.group_id).encode("utf-8"),
+                        str(0).encode("utf-8"),
+                        str(global_rank).encode("utf-8"),
+                        endpoint_info_serialize(endpoint)
+                    ]
+                    self.zmq_socket.send_multipart(send_parts)
+                    message_parts: List[bytes] = self.zmq_socket.recv_multipart()
+                    endpoint.connect(endpoint_info_deserialize(message_parts[0]))
+                    self.zmq_socket.disconnect(zmq_server)
+        print("rdma_connection done!!!!!")
+        print(rdma_endpoint_ctx())
 
     def clear_receive_queue(self, socket, timeout=1000):
         """消耗接收队列中的所有消息"""
@@ -273,6 +313,80 @@ class ParameterClient:
     def send_weight_factor(self, weight_factor: float):
         request = UpdateClientWeightFactorRequest(group_id=self.group_id, factor=weight_factor)
         self.master_stub.UpdateClientWeightFactor(request)
+
+    def send_update_rdma(self, ps_server, p_state_dict: Dict[str, torch.Tensor], mode="send"):
+        status = 0
+        try:
+            p_state_dict_info = {}
+            global_rank = gpc.get_global_rank()
+            endpoint = rdma_endpoint_ctx().get(self.worker_id, self.group_id, global_rank, ps_server)
+            for layer_id, layer_state_dict in p_state_dict.items():
+                p_state_dict_info[layer_id] = {}
+                torch.cuda.synchronize()
+                for key, t in layer_state_dict.items():
+                    p_state_dict_info[int(layer_id)][key] = list(t.shape)
+                    endpoint.register_memory_region(key, t.data_ptr(), t.storage_offset(), t.numel() * t.itemsize)
+            send_parts = [
+                self.worker_id.encode("utf-8"),
+                b"RDMA_PUT" if mode=="send" else b"RDMA_GET",
+                str(self.group_id).encode("utf-8"),
+                str(0).encode("utf-8"),
+                str(global_rank).encode("utf-8"),
+                endpoint_info_serialize(endpoint),
+                json.dumps(p_state_dict_info).encode("utf-8")
+            ]
+            with self.lock:
+                self.zmq_socket.connect(ps_server)
+                self.zmq_socket.send_multipart(send_parts)
+                self.zmq_socket.recv()
+                self.zmq_socket.disconnect(ps_server)
+        except zmq.ZMQError as e:
+            status = 1
+            logger.error(f"ZMQ Error in send_update: {e}")
+            self.restart_zmq(ps_server)
+        except Exception as e:
+            status = 1
+            logger.error(f"Unexpected error in send_update: {e}")
+            self.restart_zmq(ps_server)
+        finally:
+            return status
+
+    def recv_update_rdma(self, ps_server, p_state_dict: Dict[str, torch.Tensor]):
+        status = 0
+        try:
+            p_state_dict_info = {}
+            global_rank = gpc.get_global_rank()
+            endpoint = rdma_endpoint_ctx().get(self.worker_id, self.group_id, global_rank, ps_server)
+            for layer_id, layer_state_dict in p_state_dict.items():
+                p_state_dict_info[layer_id] = {}
+                torch.cuda.synchronize()
+                for key, t in layer_state_dict.items():
+                    p_state_dict_info[int(layer_id)][key] = (list(t.shape))
+                    endpoint.register_memory_region(key, t.data_ptr(), t.storage_offset(), t.numel() * t.itemsize)
+            send_parts = [
+                self.worker_id.encode("utf-8"),
+                b"RDMA_GET",
+                str(self.group_id).encode("utf-8"),
+                str(0).encode("utf-8"),
+                str(global_rank).encode("utf-8"),
+                endpoint_info_serialize(endpoint),
+                json.dumps(p_state_dict_info).encode("utf-8")
+            ]
+            with self.lock:
+                self.zmq_socket.connect(ps_server)
+                self.zmq_socket.send_multipart(send_parts)
+                self.zmq_socket.recv()
+                self.zmq_socket.disconnect(ps_server)
+        except zmq.ZMQError as e:
+            status = 1
+            logger.error(f"ZMQ Error in send_update: {e}")
+            self.restart_zmq(ps_server)
+        except Exception as e:
+            status = 1
+            logger.error(f"Unexpected error in send_update: {e}")
+            self.restart_zmq(ps_server)
+        finally:
+            return status
 
     def send_update(self, ps_server: str, layer_id: int, state_dict: Dict[str, torch.Tensor]) -> None:
         """

@@ -5,10 +5,16 @@ import time
 from concurrent import futures
 from queue import Queue
 from threading import Event, Lock
-from typing import Dict, List
+from typing import Dict, List, Tuple
+import functools
 
+import json
 import grpc
+
+import dlslime
+
 import torch
+
 import zmq
 from loguru import logger
 
@@ -23,6 +29,7 @@ from internlm.param_server.common.utils import (
 from internlm.param_server.proto import master_pb2, master_pb2_grpc, ps_pb2_grpc
 from internlm.param_server.proto.master_pb2 import ComputeStatus, NormStatus
 from internlm.param_server.ps.ps_service import PSControlServicer
+from internlm.param_server.transport.rdma_transport import endpoint_info_deserialize, endpoint_info_serialize, rdma_endpoint_ctx
 
 
 class WorkerThread(threading.Thread):
@@ -66,7 +73,127 @@ class WorkerThread(threading.Thread):
                         self.zmq_socket.send(b"ERROR: Invalid group_id or layer_id")
                         continue
 
-                    if request_type == "PUT":
+                    if request_type == "RDMA_CONNECT":
+                        global_rank = int(message_parts[4].decode("utf-8"))
+                        target_info = endpoint_info_deserialize(message_parts[5])
+                        endpoint = rdma_endpoint_ctx().create(client_id, group_id, global_rank)
+                        endpoint.connect(target_info)
+                        self.zmq_socket.send_multipart([endpoint_info_serialize(endpoint)])
+                        print(rdma_endpoint_ctx().rdma_endpoints)
+                        logger.info(f"Exchange Done")
+                    elif request_type == "RDMA_PUT":
+                        start_time = time.time()
+                        global_rank = int(message_parts[4].decode("utf-8"))
+                        remote_endpoint_info = endpoint_info_deserialize(message_parts[5])
+                        p_state_info = json.loads(message_parts[6].decode("utf-8"))
+                        logger.info(f"RDMA RECV, global rank: {global_rank}")
+                        endpoint = rdma_endpoint_ctx().get(client_id, group_id, global_rank)
+                        remote_mr_info = remote_endpoint_info["mr_info"] or {}
+                        for mr_key, mr_value in remote_mr_info.items():
+                            endpoint.register_remote_memory_region(mr_key, mr_value)
+                        register_remote_memory_done = time.time()
+                        logger.info(f"register remote memory region done, cost: {register_remote_memory_done - start_time:.3f}")
+
+                        if p_state_info:
+                            p_state_info = list(p_state_info.items())
+                            (layer_id, layer_info) = p_state_info[0]
+
+                            layer_state_dict = {}
+                            batch = []
+                            logger.info(f"allocating layer {layer_id}")
+                            for key, shape_info in layer_info.items():
+                                start_a = time.time()
+                                dtype = torch.bfloat16
+                                if "feed_forward.moe_layer.gate.wg.weight" in key:
+                                    dtype = torch.float32
+                                t = torch.empty(shape_info, dtype=dtype)
+                                layer_state_dict[key] = t
+                                endpoint.register_memory_region(key, t.data_ptr(), t.storage_offset(), t.numel() * t.itemsize)
+                                batch.append(dlslime.Assignment(mr_key=key, target_offset=0, source_offset=0, length=t.numel() * t.itemsize))
+                                with self.ps.lock:
+                                    self.ps.storage.add_layer_state_dict(group_id, int(layer_id), layer_state_dict)
+                                end_a = time.time()
+                            logger.info(f"allocating layer {layer_id}, cost: {end_a - start_a}")
+
+                            last_layer = layer_id
+                            for layer_id, layer_info in p_state_info[1:]:
+                                logger.info(f"receiving layer {last_layer} and allocating layer {layer_id}")
+                                start_sa = time.time()
+                                layer_state_dict = {}
+                                rdma_assignment = endpoint.read_batch(batch, async_op=True)
+                                batch = []
+                                for key, shape_info in layer_info.items():
+                                    dtype = torch.bfloat16
+                                    if "feed_forward.moe_layer.gate.wg.weight" in key:
+                                        dtype = torch.float32
+                                    t = torch.empty(shape_info, dtype=dtype)
+                                    layer_state_dict[key] = t
+                                    endpoint.register_memory_region(key, t.data_ptr(), t.storage_offset(), t.numel() * t.itemsize)
+                                    batch.append(dlslime.Assignment(mr_key=key, target_offset=0, source_offset=0, length=t.numel() * t.itemsize))
+                                rdma_assignment.wait()
+                                with self.ps.lock:
+                                    self.ps.storage.add_layer_state_dict(group_id, int(layer_id), layer_state_dict)
+                                end_sa = time.time()
+                                logger.info(f"receiving layer {last_layer} and allocating layer {layer_id}, cost: {end_sa - start_sa}")
+                                last_layer = layer_id
+
+                            
+                            rdma_assignment = endpoint.read_batch(batch, async_op=False)
+
+                            # for layer_id, layer_info in p_state_info.items():
+                            #     layer_state_dict = {}
+                            #     for key, shape_info in layer_info.items():
+                            #         dtype = torch.bfloat16
+                            #         if "feed_forward.moe_layer.gate.wg.weight" in key:
+                            #             dtype = torch.float32
+                            #         store_layer_dict = self.ps.storage.get_weight(group_id, int(layer_id)) or {}
+                            #         t = store_layer_dict.get(key, None)
+                            #         if t is None:
+                            #             logger.debug(f"Cache Miss of {key}, allocate a new tensor")
+                            #             t = torch.empty(shape_info, dtype=dtype)
+                            #             store_layer_dict[key] = t
+
+                            #         layer_state_dict[key] = t
+                            #         endpoint.register_memory_region(key, t.data_ptr(), t.storage_offset(), t.numel() * t.itemsize)
+                            #         endpoint.read_batch([dlslime.Assignment(mr_key=key, target_offset=0, source_offset=0, length=t.numel() * t.itemsize)])
+                            #         with self.ps.lock:
+                            #             self.ps.storage.add_layer_state_dict(group_id, int(layer_id), layer_state_dict)
+                        else:
+                            logger.warning("empty RDMA PUT")
+
+                        end_time = time.time()
+                        logger.info(f"worker {self.id} Received complete state_dict from client {client_id} {group_id=} {layer_id=}, cost: {end_time-start_time:.3f}")
+                        response = f"send to ps {self.ps.ps_id} successful"
+                        self.zmq_socket.send(response.encode())
+                        self.ps.groups_in_receiving.add(group_id)
+                    elif request_type == "RDMA_GET":
+                        start_time = time.time()
+                        global_rank = int(message_parts[4].decode("utf-8"))
+                        remote_endpoint_info = endpoint_info_deserialize(message_parts[5])
+                        p_state_info = json.loads(message_parts[6].decode("utf-8"))
+                        logger.info(f"RDMA SEND, global rank: {global_rank}")
+                        batch: List[dlslime.Assignment] = []
+                        endpoint = rdma_endpoint_ctx().get(client_id, group_id, global_rank)
+
+                        for layer_id, layer_info in p_state_info.items():
+                            get_layer_start = time.time()
+                            ps_layer_dict = self.ps.get_layer_state_dict(int(layer_id))
+                            get_layer_end = time.time()
+                            logger.debug(f"Layer dict got, time cost: {get_layer_end - get_layer_start:.3f}s")
+                            for key, shape_info in layer_info.items():
+                                if key in ps_layer_dict:
+                                    t:torch.Tensor = ps_layer_dict[key]
+                                    assert functools.reduce(lambda x,y: x * y, shape_info) == t.numel()
+                                    assert t.is_cpu
+                                    # logger.info(f"RDMA GET register memory region: {key, t.dtype, t.shape, shape_info}")
+                                    endpoint.register_remote_memory_region(key, remote_endpoint_info["mr_info"][key])
+                                    endpoint.register_memory_region(key, t.data_ptr(), t.storage_offset(), t.numel() * t.itemsize)
+                                    endpoint.write_batch([dlslime.Assignment(mr_key=key, target_offset=0, source_offset=0, length=t.numel() * t.itemsize)])
+                        end_time = time.time()
+                        logger.info(f"worker {self.id} Sent complete state_dict from client {client_id} {group_id=} {layer_id=}, cost: {end_time-start_time:.3f}")
+                        response = f"send to ps {self.ps.ps_id} successful"
+                        self.zmq_socket.send(response.encode())
+                    elif request_type == "PUT":
                         try:
                             layer_state_dict = deserialize_layer(group_id, layer_id, message_parts[4:])
                             if layer_state_dict is None:
@@ -326,20 +453,22 @@ class ParameterServer:
         logger.info("finish clear receiving queue")
 
     def get_layer_state_dict(self, layer_id: int) -> Dict[str, torch.Tensor]:
+        # TODO: Critical Path
         layer_state_dict = {}
         for key, value in self.model_state_dict.items():
             dtype = self.origin_dtype
             if "feed_forward.moe_layer.gate.wg.weight" in key:
                 dtype = torch.float32
+                value = value.clone()
             if key.startswith("layers"):
                 layer_idx = int(key.split(".")[1])
                 if layer_idx == layer_id:
-                    layer_state_dict[key] = value.clone().to(dtype)
+                    layer_state_dict[key] = value.to(dtype)
             else:
                 if layer_id == 0 and (key.startswith("tok_embeddings") or key.startswith("embed_tokens")):
-                    layer_state_dict[key] = value.clone().to(dtype)
+                    layer_state_dict[key] = value.to(dtype)
                 elif layer_id == self.global_num_layers - 1 and (key.startswith("norm") or key.startswith("output")):
-                    layer_state_dict[key] = value.clone().to(dtype)
+                    layer_state_dict[key] = value.to(dtype)
         return layer_state_dict
 
     def compute_pseudo_gradient_naive(self, groups: List[int]) -> Dict[str, torch.Tensor]:
@@ -360,6 +489,7 @@ class ParameterServer:
 
     def get_pseudo_gradient_by_group(self, groups: List[int]) -> Dict[str, torch.Tensor]:
         start_ts = time.time()
+        logger.info(f"begin get_pseudo_gradient_by_group")
         pseudo_gradient = {}
         for group_id in groups:
             pseudo_gradient[group_id] = {}
@@ -502,8 +632,9 @@ class ParameterServer:
                         try:
                             if self.only_communicate:
                                 self.serialize_consumer.clear()
-                                for layer_id in config.layer_chunks[self.ps_id]:
-                                    self.task_queue.put(layer_id)
+                                if not config.USE_DLSLIME_RDMA_TRANSFER:
+                                    for layer_id in config.layer_chunks[self.ps_id]:
+                                        self.task_queue.put(layer_id)
                                 self.compute_status = ComputeStatus.COMPUTE_SUCCESS
                                 logger.info("Only communicate, no update.")
                             else:
@@ -526,8 +657,9 @@ class ParameterServer:
                                 self.weight_factor.clear()
                                 self.step(pseudo_gradient)
                                 self.serialize_consumer.clear()
-                                for layer_id in config.layer_chunks[self.ps_id]:
-                                    self.task_queue.put(layer_id)
+                                if not config.USE_DLSLIME_RDMA_TRANSFER:
+                                    for layer_id in config.layer_chunks[self.ps_id]:
+                                        self.task_queue.put(layer_id)
                                 self.compute_status = ComputeStatus.COMPUTE_SUCCESS  # Update successful
                                 logger.info("Update step completed successfully.")
                                 assert self.save_ckpt is False
