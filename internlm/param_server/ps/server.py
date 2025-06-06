@@ -459,10 +459,11 @@ class ParameterServer:
             dtype = self.origin_dtype
             if "feed_forward.moe_layer.gate.wg.weight" in key:
                 dtype = torch.float32
-                value = value.clone()
             if key.startswith("layers"):
                 layer_idx = int(key.split(".")[1])
                 if layer_idx == layer_id:
+                    if dtype == value.dtype:
+                        value = value.clone()
                     layer_state_dict[key] = value.to(dtype)
             else:
                 if layer_id == 0 and (key.startswith("tok_embeddings") or key.startswith("embed_tokens")):
