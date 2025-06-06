@@ -307,11 +307,12 @@ def client_recv(model, optimizer: torch.optim.Optimizer = None, request_for_ckpt
 
 def get_send_state_dict(model):
     send_state_dict = get_send_state_dict_tp_or_wp(model)
-    moe_layer_state_dict = get_send_state_dict_ep(model)
+    if gpc.is_initialized(ParallelMode.EXPERT):
+        moe_layer_state_dict = get_send_state_dict_ep(model)
 
-    assert send_state_dict.keys() == moe_layer_state_dict.keys(), "layers should be same"
-    for layer_id, value in moe_layer_state_dict.items():
-        send_state_dict[layer_id].update(value)
+        assert send_state_dict.keys() == moe_layer_state_dict.keys(), "layers should be same"
+        for layer_id, value in moe_layer_state_dict.items():
+            send_state_dict[layer_id].update(value)
     return send_state_dict
 
 
@@ -433,7 +434,8 @@ def recover_local_state(model, optimizer, recv_state_dict):
         start_ts = time.time()
 
     recover_local_state_tp_or_wp(model, recv_state_dict)
-    recover_local_state_ep(model, recv_state_dict)
+    if gpc.is_initialized(ParallelMode.EXPERT):
+        recover_local_state_ep(model, recv_state_dict)
 
     assert optimizer is not None
     if optimizer is not None:
