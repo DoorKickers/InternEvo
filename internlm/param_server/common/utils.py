@@ -15,9 +15,6 @@ from internlm.param_server.common.initialize import check_state_dict
 MAX_CHUNK_SIZE = 512 * 1024
 
 
-BufferKey = namedtuple("BufferKey", ["group_id", "layer_id"])
-
-
 # Create a custom wrapper with timeout for the stub
 class CustomServiceStub:
     def __init__(self, stub, timeout):
@@ -185,51 +182,6 @@ def deserialize_layer(group_id: int, layer_id: int, message_parts: List[bytes]) 
     end_ts = time.time()
     logger.info(f"deserialize_layer success, cost: {end_ts-start_ts:.3f}. length: {data_size}")
     return state_dict
-
-class BufferManager:
-    """
-    Manages buffers for storing and retrieving compressed and serialized data chunks.
-    """
-
-    def __init__(self):
-        """
-        Initializes the BufferManager.
-        """
-        self.state_dict: Dict[BufferKey, Dict[str, torch.Tensor]] = {}
-
-    def get_buffer_key(self, group_id: int, layer_id: int) -> BufferKey:
-        """
-        Generates a unique key for the buffer based on group and layer IDs.
-
-        Args:
-            group_id (int): Group ID.
-            layer_id (int): Layer ID.
-
-        Returns:
-            str: A unique string key for the buffer.
-        """
-        return BufferKey(group_id, layer_id)
-
-    def add_layer_state_dict(self, group_id: int, layer_id: int, layer_state_dict: Dict[str, torch.Tensor]):
-        buffer_key = self.get_buffer_key(group_id, layer_id)
-        self.state_dict[buffer_key] = layer_state_dict
-
-    def get_weight(self, group_id: int, layer_id: int) -> Optional[Dict]:
-        """
-        Retrieves the state dictionary associated with the buffer.
-
-        Args:
-            group_id (int): The group ID of the buffer.
-            layer_id (int): The layer ID of the buffer.
-
-        Returns:
-            Optional[Dict]: The state dictionary if available, else None.
-        """
-        buffer_key = self.get_buffer_key(group_id=group_id, layer_id=layer_id)
-        return self.state_dict.get(buffer_key, None)
-
-    def destroy(self):
-        self.state_dict.clear()
 
 
 def save_state_dict(state_dict, path, name):

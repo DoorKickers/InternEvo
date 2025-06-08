@@ -13,13 +13,15 @@ ps_servers = {
     1: "10.10.41.42",
 }
 
-USE_DLSLIME_RDMA_TRANSFER=True
+USE_DLSLIME_RDMA_TRANSFER=False
+NUM_PORTS=2
+
 NUM_PS = len(ps_servers)
 
 MASTER_ADDR = "10.10.41.41"
-MASTER_PORT = 55503
-ZMQ_PORT = 55504
-GRPC_PORT = 55577
+MASTER_PORT = 55500
+ZMQ_PORT = 55544
+GRPC_PORT = 55580
 GRPC_TIMEOUT = 10.0  # second
 
 UPDATE_METHOD = "partial_sync"  # sync or partial_sync or async_buffer

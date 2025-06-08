@@ -35,6 +35,7 @@ from internlm.param_server.proto.master_pb2 import (
     UpdateMetricLineResponse,
 )
 
+from internlm.param_server.ps.ps_request import PSRequestHeader, RDMAConnectionInfo, LayerInfo, TensorInfo, RDMAOneSideRequest
 from internlm.param_server.transport.rdma_transport import rdma_endpoint_ctx, endpoint_info_serialize, endpoint_info_deserialize
 
 
@@ -116,17 +117,22 @@ class ParameterClient:
                     endpoint = rdma_endpoint_ctx().create(self.worker_id, self.group_id, global_rank, zmq_server)
                     # Step 2: send RDMA endpoint info and connect
                     self.zmq_socket.connect(zmq_server)
+                    header = PSRequestHeader(
+                        client_id=self.worker_id,
+                        group_id=self.group_id
+                    ).to_bytes()
+                    connection_info = RDMAConnectionInfo(
+                        hash_id=(self.worker_id, self.group_id, global_rank, zmq_server),
+                        rdma_info=json.dumps(endpoint.endpoint_info)
+                    ).to_bytes()
                     send_parts = [
-                        self.worker_id.encode("utf-8"),
                         b"RDMA_CONNECT",
-                        str(self.group_id).encode("utf-8"),
-                        str(0).encode("utf-8"),
-                        str(global_rank).encode("utf-8"),
-                        endpoint_info_serialize(endpoint)
+                        header,
+                        connection_info
                     ]
                     self.zmq_socket.send_multipart(send_parts)
-                    message_parts: List[bytes] = self.zmq_socket.recv_multipart()
-                    endpoint.connect(endpoint_info_deserialize(message_parts[0]))
+                    message_parts: RDMAConnectionInfo = RDMAConnectionInfo.model_validate(self.zmq_socket.recv_json())
+                    endpoint.connect(json.loads(message_parts.rdma_info))
                     self.zmq_socket.disconnect(zmq_server)
         print("rdma_connection done!!!!!")
         print(rdma_endpoint_ctx())
@@ -164,10 +170,14 @@ class ParameterClient:
             tuple: A tuple containing the layer ID and the received state dictionary.
                    Returns (layer_id, None) if an error occurs.
         """
+        header = PSRequestHeader(
+            client_id=self.worker_id,
+            group_id=self.group_id
+        ).to_bytes()
+
         send_parts = [
-            self.worker_id.encode("utf-8"),
             b"GET",
-            str(self.group_id).encode("utf-8"),
+            header,
             str(layer_id).encode("utf-8"),
         ]
         try:
@@ -314,27 +324,38 @@ class ParameterClient:
         request = UpdateClientWeightFactorRequest(group_id=self.group_id, factor=weight_factor)
         self.master_stub.UpdateClientWeightFactor(request)
 
-    def send_update_rdma(self, ps_server, p_state_dict: Dict[str, torch.Tensor], mode="send"):
+    def send_update_rdma(self, ps_server: str, p_state_dict: Dict[str, Dict[str, torch.Tensor]]):
         status = 0
         try:
             p_state_dict_info = {}
             global_rank = gpc.get_global_rank()
             endpoint = rdma_endpoint_ctx().get(self.worker_id, self.group_id, global_rank, ps_server)
+            layer_info = []
             for layer_id, layer_state_dict in p_state_dict.items():
+                tensor_info = []
                 p_state_dict_info[layer_id] = {}
-                torch.cuda.synchronize()
                 for key, t in layer_state_dict.items():
-                    p_state_dict_info[int(layer_id)][key] = list(t.shape)
                     endpoint.register_memory_region(key, t.data_ptr(), t.storage_offset(), t.numel() * t.itemsize)
+                    tensor_info.append(TensorInfo(key=key, dtype=str(t.dtype), shape_info=list(t.shape)))
+                layer_info.append(LayerInfo(layer_id=int(layer_id), tensor_info=tensor_info))
+
+            header = PSRequestHeader(client_id=self.worker_id, group_id=self.group_id).to_bytes()
+            
+            one_side_request = RDMAOneSideRequest(
+                opcode="READ",
+                connection_info=RDMAConnectionInfo(
+                    hash_id=(self.worker_id, self.group_id, global_rank, ps_server),
+                    rdma_info=json.dumps(endpoint.endpoint_info)
+                ),
+                layer_info=layer_info
+            ).to_bytes()
+
             send_parts = [
-                self.worker_id.encode("utf-8"),
-                b"RDMA_PUT" if mode=="send" else b"RDMA_GET",
-                str(self.group_id).encode("utf-8"),
-                str(0).encode("utf-8"),
-                str(global_rank).encode("utf-8"),
-                endpoint_info_serialize(endpoint),
-                json.dumps(p_state_dict_info).encode("utf-8")
+                b"RDMA_PUT",
+                header,
+                one_side_request
             ]
+
             with self.lock:
                 self.zmq_socket.connect(ps_server)
                 self.zmq_socket.send_multipart(send_parts)
@@ -351,27 +372,42 @@ class ParameterClient:
         finally:
             return status
 
-    def recv_update_rdma(self, ps_server, p_state_dict: Dict[str, torch.Tensor]):
+    def recv_update_rdma(self, ps_server, p_state_dict: Dict[str, Dict[str, torch.Tensor]]):
         status = 0
         try:
             p_state_dict_info = {}
             global_rank = gpc.get_global_rank()
             endpoint = rdma_endpoint_ctx().get(self.worker_id, self.group_id, global_rank, ps_server)
+            layer_info = []
             for layer_id, layer_state_dict in p_state_dict.items():
+                tensor_info = []
                 p_state_dict_info[layer_id] = {}
                 torch.cuda.synchronize()
                 for key, t in layer_state_dict.items():
-                    p_state_dict_info[int(layer_id)][key] = (list(t.shape))
                     endpoint.register_memory_region(key, t.data_ptr(), t.storage_offset(), t.numel() * t.itemsize)
+                    tensor_info.append(TensorInfo(key=key, dtype=str(t.dtype), shape_info=list(t.shape)))
+                layer_info.append(LayerInfo(layer_id=int(layer_id), tensor_info=tensor_info))
+
+            header = PSRequestHeader(
+                client_id=self.worker_id,
+                group_id=self.group_id
+            ).to_bytes()
+
+            oneside_request = RDMAOneSideRequest(
+                opcode="WRITE",
+                connection_info=RDMAConnectionInfo(
+                    hash_id=(self.worker_id, self.group_id, global_rank, ps_server),
+                    rdma_info=json.dumps(endpoint.endpoint_info)
+                ),
+                layer_info=layer_info
+            ).to_bytes()
+            
             send_parts = [
-                self.worker_id.encode("utf-8"),
                 b"RDMA_GET",
-                str(self.group_id).encode("utf-8"),
-                str(0).encode("utf-8"),
-                str(global_rank).encode("utf-8"),
-                endpoint_info_serialize(endpoint),
-                json.dumps(p_state_dict_info).encode("utf-8")
+                header,
+                oneside_request
             ]
+
             with self.lock:
                 self.zmq_socket.connect(ps_server)
                 self.zmq_socket.send_multipart(send_parts)
@@ -398,10 +434,14 @@ class ParameterClient:
         """
         status = 0
         try:
+            header = PSRequestHeader(
+                client_id=self.worker_id,
+                group_id=self.group_id
+            ).to_bytes()
+
             send_parts = [
-                self.worker_id.encode("utf-8"),
                 b"PUT",
-                str(self.group_id).encode("utf-8"),
+                header,
                 str(layer_id).encode("utf-8"),
             ] + serialize_layer(state_dict)
 

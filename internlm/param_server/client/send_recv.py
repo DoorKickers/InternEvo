@@ -2,6 +2,9 @@ import importlib
 import random
 import time
 
+import concurrent
+from concurrent.futures import ThreadPoolExecutor
+
 import torch
 import torch.distributed as dist
 
@@ -183,8 +186,16 @@ def client_send(model, consume_tokens, dynamic_config):
                     raise ValueError(f"Failed to find PS ID for layer {layer_id}.")
                 ps_server = dynamic_config.zmq_servers[ps_id]
                 ps_server_state_dict[ps_server][int(layer_id)] = layer_state_dict
-            for ps_server, p_state_dict in ps_server_state_dict.items():
-                client.send_update_rdma(ps_server, p_state_dict)
+            # 使用线程池（max_workers 控制最大线程数）
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                # 提交所有任务
+                futures = [
+                    executor.submit(client.send_update_rdma, ps_server, p_state_dict)
+                    for ps_server, p_state_dict in ps_server_state_dict.items()
+                ]
+                # 等待所有任务完成（可选）
+                for future in concurrent.futures.as_completed(futures):
+                    future.result()  # 检查是否有异常
         else:
             for layer_id in layer_idxs:
                 layer_state_dict = send_state_dict[layer_id]
@@ -280,8 +291,16 @@ def client_recv(model, optimizer: torch.optim.Optimizer = None, request_for_ckpt
                 ps_server = dynamic_config.zmq_servers[ps_id]
                 ps_server_state_dict[ps_server][int(layer_id)] = layer_state_dict
                 all_recv_state_dict.update(layer_state_dict)
-            for ps_server, p_state_dict in ps_server_state_dict.items():
-                client.recv_update_rdma(ps_server, p_state_dict)
+            # 使用线程池（max_workers 控制最大线程数）
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                # 提交所有任务
+                futures = [
+                    executor.submit(client.recv_update_rdma, ps_server, p_state_dict)
+                    for ps_server, p_state_dict in ps_server_state_dict.items()
+                ]
+                # 等待所有任务完成（可选）
+                for future in concurrent.futures.as_completed(futures):
+                    future.result()  # 检查是否有异常
             # logger.info(f"Successfully received updates for layer {layer_id}.")
         else:
             for layer_id in range(model.first_layer, model.last_layer):
