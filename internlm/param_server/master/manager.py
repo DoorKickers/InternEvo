@@ -70,11 +70,6 @@ class WorkerState:
 
         ts = time.time()
         with self.lock:
-            if self.alive_workers.get(worker_id, None) == None:
-                print("aaaaaaaaaaaaaaaaaaaaaaaa")
-                print(worker_id)
-                # self.status_history_dict.setdefault(worker_id, []).append((time.time(), "CONNECTED"))
-                # print(self.status_history_dict.setdefault(worker_id))
             self.alive_workers[worker_id] = ts
 
     def alive_worker(self):
@@ -330,7 +325,6 @@ class PullState:
 
     def update(self, group_id, pull_status):
         self.status_dict[group_id] = pull_status
-        print("ppppppppppppppppp", pull_status)
         self.status_history_dict.setdefault(group_id, []).append((time.time(), self.name_mapping[self.status_dict[group_id]]))
 
     def remove_state(self, group_ids):
@@ -567,7 +561,6 @@ class StateManager:
         self.load_state_dict(last_state_dict)
 
     def ps_heartbeat(self, ps_id):
-        print("1111111111111111111")
         self.ps_state.update(ps_id)
 
     def client_heartbeat(self, group_id):
@@ -805,8 +798,9 @@ class StateManager:
 
         need_update_weight_groups = self.received_groups & self.group_state.alive_worker()
         logger.info(f"finish push, {need_update_weight_groups=}")
-        self.send_norm_signal(need_update_weight_groups)
-        if self.has_compute_norm_fail:
+        if config.CHECK_GROUP_NORMS:
+            self.send_norm_signal(need_update_weight_groups)
+        if not config.CHECK_GROUP_NORMS or self.has_compute_norm_fail:
             self.send_step_signal(need_update_weight_groups)
             self.update_global_status_history()
             self.global_status = GlobalStatus.COMPUTE_STEP
@@ -830,7 +824,7 @@ class StateManager:
                 self.has_compute_norm_fail = True
 
     def check_norm(self, groups: set):
-        if self.has_compute_norm_fail:
+        if not config.CHECK_GROUP_NORMS or self.has_compute_norm_fail:
             self.has_compute_norm_fail = False
             self.groups_norm.reset()
             self.norm_state.reset()
@@ -885,7 +879,7 @@ class StateManager:
         else:
             groups_weight_factor = {group: 1.0 / len(need_update_weight_groups) for group in need_update_weight_groups}
 
-        if self.clip_pseudo_grad is not None:
+        if self.clip_pseudo_grad is not None and config.CHECK_GROUP_NORMS:
             clip_coef = self.get_clip_coef(groups_weight_factor)
         else:
             clip_coef = 1.0

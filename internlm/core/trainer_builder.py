@@ -392,6 +392,8 @@ class TrainerBuilder(Trainer):
             * gpc.get_world_size(ParallelMode.DATA),
             global_world_size=gpc.get_world_size(ParallelMode.GLOBAL),
             mlp_ratio=gpc.config.model["mlp_ratio"],
+            top_k = gpc.config.model.get("top_k", None),
+            num_experts = gpc.config.model.get("num_experts", None)
         )
         record_current_batch_training_metrics(
             get_tflops_func=get_tflops_func,
