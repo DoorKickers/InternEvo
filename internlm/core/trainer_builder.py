@@ -27,7 +27,6 @@ from internlm.param_server.client.client import client
 from internlm.param_server.client.send_recv import try_interact_with_param_server
 from internlm.param_server.common.config import master_server
 from internlm.param_server.client.client import http_server
-from internlm.param_server.client.client_http_service import ClientServiceHandler
 from internlm.train.pipeline import (
     generate_meta_data,
     get_scheduler_hooks,
@@ -143,18 +142,9 @@ class TrainerBuilder(Trainer):
 
             # Initialize client
             need_heartbeat = True
-            def http_main():
-                logger.info(f"HTTP server has started")
-                http_server = HTTPServer(('0.0.0.0', 55504), ClientServiceHandler)
-                http_server.serve_forever()
             if gpc.is_using_parallel_mode(ParallelMode.PIPELINE):
                 need_heartbeat = gpc.is_last_rank(ParallelMode.PIPELINE)
-                if gpc.is_last_rank(ParallelMode.PIPELINE):
-                    http_server_thread = threading.Thread(target=http_main, daemon=True)
-                    http_server_thread.start()
             client.start(self.group_id, self.group_weight, master_server, need_heartbeat)
-
-
 
         # generate ckpt metaData
         meta_data = generate_meta_data(optimizer)

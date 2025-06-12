@@ -88,7 +88,7 @@ def try_interact_with_param_server(model, optimizer, consume_tokens):
     gpc.consume_steps = 0
     dp_rank = gpc.get_local_rank(ParallelMode.DATA)
     tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
-    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
+    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT)
     wdp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
 
     # 1. query whether can push weight
@@ -163,7 +163,7 @@ def client_send(model, consume_tokens, dynamic_config):
     send_state_dict = get_send_state_dict(model)
     dp_rank = gpc.get_local_rank(ParallelMode.DATA)
     tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
-    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
+    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT)
     wdp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
 
     send_status = 0
@@ -244,7 +244,7 @@ def query_compute_status_and_broadcast(dp_rank, tp_rank, wp_rank, wdp_rank):
 def client_recv(model, optimizer: torch.optim.Optimizer = None, request_for_ckpt: bool = False, dynamic_config=None):
     dp_rank = gpc.get_local_rank(ParallelMode.DATA)
     tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
-    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
+    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT)
     wdp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
 
     # Receive updates for each layer
@@ -587,7 +587,7 @@ def recover_local_state_tp_or_wp(model, recv_state_dict):
 def client_recv_ckpt_status():
     dp_rank = gpc.get_local_rank(ParallelMode.DATA)
     tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
-    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
+    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT)
     wdp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
     ckpt_status = 0
     retry_print_flag = False
