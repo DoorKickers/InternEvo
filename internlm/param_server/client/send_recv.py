@@ -264,14 +264,16 @@ def query_compute_status_and_broadcast(dp_rank, tp_rank, wp_rank, wdp_rank):
     _broadcast_object_list(dp_rank, tp_rank, wp_rank, wdp_rank, object_list)
     return object_list[0]
 
-
+send_state_dict = None
 def client_recv(model, optimizer: torch.optim.Optimizer = None, request_for_ckpt: bool = False, dynamic_config=None):
     dp_rank = gpc.get_local_rank(ParallelMode.DATA)
     tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
     wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
     wdp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
     if config.USE_DLSLIME_RDMA_TRANSFER:
-        send_state_dict = get_send_state_dict(model)
+        global send_state_dict
+        if send_state_dict is None:
+            send_state_dict = get_send_state_dict(model)
 
     # Receive updates for each layer
     all_recv_state_dict = {}
@@ -280,8 +282,6 @@ def client_recv(model, optimizer: torch.optim.Optimizer = None, request_for_ckpt
         if config.USE_DLSLIME_RDMA_TRANSFER:
             logger.info("begin dlslime RDMA RECV")
             layer_idxs = list(send_state_dict.keys())
-            random.shuffle(layer_idxs)
-            logger.info(f"shuffle send layer idx: {layer_idxs}")
             ps_server_state_dict = {zmq_server: {} for _, zmq_server in dynamic_config.zmq_servers.items()}
             for layer_id in layer_idxs:
                 layer_state_dict = send_state_dict[layer_id]
