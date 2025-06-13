@@ -214,7 +214,10 @@ def get_megatron_flops(
     Calc flops based on the paper of Megatron https://deepakn94.github.io/assets/papers/megatron-sc21.pdf
     """
 
-    checkpoint_activations_factor = 4 if checkpoint else 3
+    if checkpoint is False:
+        checkpoint = 0.0
+
+    checkpoint_activations_factor = 3 + checkpoint
     if checkpoint:
         attn_checkpoint_activation_factor = 3 if selective_checkpoint else 4
     else:
