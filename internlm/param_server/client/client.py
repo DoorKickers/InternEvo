@@ -116,6 +116,7 @@ class ParameterClient:
                     # Step 1: create RDMA endpoint
                     endpoint = rdma_endpoint_ctx().create(self.worker_id, self.group_id, global_rank, zmq_server)
                     # Step 2: send RDMA endpoint info and connect
+                    logger.info(f"{self.worker_id=}, {self.group_id=}, {global_rank=}, {zmq_server=}, rdma_connection begin ...")
                     self.zmq_socket.connect(zmq_server)
                     header = PSRequestHeader(
                         client_id=self.worker_id,
@@ -134,8 +135,7 @@ class ParameterClient:
                     message_parts: RDMAConnectionInfo = RDMAConnectionInfo.model_validate(self.zmq_socket.recv_json())
                     endpoint.connect(json.loads(message_parts.rdma_info))
                     self.zmq_socket.disconnect(zmq_server)
-        print("rdma_connection done!!!!!")
-        print(rdma_endpoint_ctx())
+                    logger.info(f"{self.worker_id=}, {self.group_id=}, {global_rank=}, {zmq_server=}, rdma_connection done!!!!!")
 
     def clear_receive_queue(self, socket, timeout=1000):
         """消耗接收队列中的所有消息"""
@@ -382,7 +382,6 @@ class ParameterClient:
             for layer_id, layer_state_dict in p_state_dict.items():
                 tensor_info = []
                 p_state_dict_info[layer_id] = {}
-                torch.cuda.synchronize()
                 for key, t in layer_state_dict.items():
                     endpoint.register_memory_region(key, t.data_ptr(), t.storage_offset(), t.numel() * t.itemsize)
                     tensor_info.append(TensorInfo(key=key, dtype=str(t.dtype), shape_info=list(t.shape)))

@@ -31,6 +31,7 @@ class RDMAEndpointContext:
 
 _RDMA_ENDPOINT_CTX = RDMAEndpointContext()
 def rdma_endpoint_ctx():
+    global _RDMA_ENDPOINT_CTX
     return _RDMA_ENDPOINT_CTX
 
 

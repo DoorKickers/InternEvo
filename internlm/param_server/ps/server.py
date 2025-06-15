@@ -49,13 +49,14 @@ class WorkerThread(threading.Thread):
         endpoint = rdma_endpoint_ctx().create(*rdma_connection_info.hash_id)
         with self.ps.lock:
             endpoint.connect(json.loads(rdma_connection_info.rdma_info))
-            print(endpoint.endpoint_info)
+            logger.info(f"RDMA Connecting of {rdma_connection_info.hash_id}, {endpoint.endpoint_info=}")
             self.zmq_socket.send_json(
                 RDMAConnectionInfo(
                     hash_id=rdma_connection_info.hash_id,
                     rdma_info=json.dumps(endpoint.endpoint_info)
                 ).model_dump()
             )
+            logger.info(f"RDMA Connecting of {rdma_connection_info.hash_id} done !!!")
 
     def rdma_put(self, header: PSRequestHeader, multi_parts: List[bytes]):
         group_id = header.group_id

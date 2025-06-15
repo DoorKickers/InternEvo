@@ -14,7 +14,6 @@ ps_servers = {
 }
 
 USE_DLSLIME_RDMA_TRANSFER=False
-NUM_PORTS=2
 
 NUM_PS = len(ps_servers)
 

@@ -93,6 +93,10 @@ class BufferManager:
         for t_info in tensor_info:
             mr_key = t_info.key
             t = layer_dict[t_info.key]
+            assert list(t.shape) == list(t_info.shape_info), ("PS Server t.shape != Client Reuqest's t_info.shape_info, "
+                                                              f"{mr_key=}, {t.shape=}, {t_info.shape_info=}")
+            assert str(t.dtype) == t_info.dtype, ("PS Server t.dtype != Client Reuqest's t_info.dtype, "
+                                                  f"{mr_key=}, {t.dtype=}, {t_info.dtype=}")
             endpoint.register_memory_region(mr_key, t.data_ptr(), t.storage_offset(), t.numel() * t.itemsize)
             batch.append(dlslime.Assignment(mr_key=mr_key, target_offset=0, source_offset=0, length=t.numel() * t.itemsize))
 
