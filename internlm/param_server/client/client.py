@@ -106,11 +106,9 @@ class ParameterClient:
         global_rank = gpc.get_global_rank()
 
         dynamic_config = importlib.reload(config)
-        assert dynamic_config is not None
-        dynamic_config
+        assert dynamic_config is not None, "invalid dynamic config!"
 
         if dp_rank == 0 and tp_rank == 0 and wp_rank ==0 and wdp_rank == 0:
-            dynamic_config.layer_chunks
             for _, zmq_server in dynamic_config.zmq_servers.items():
                 with self.lock:
                     # Step 1: create RDMA endpoint
@@ -324,7 +322,7 @@ class ParameterClient:
         request = UpdateClientWeightFactorRequest(group_id=self.group_id, factor=weight_factor)
         self.master_stub.UpdateClientWeightFactor(request)
 
-    def send_update_rdma(self, ps_server: str, p_state_dict: Dict[str, Dict[str, torch.Tensor]]):
+    def send_update_rdma(self, ps_server: str, p_state_dict: Dict[str, Dict[int, Dict[str, torch.Tensor]]]):
         status = 0
         try:
             p_state_dict_info = {}
