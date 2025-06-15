@@ -409,6 +409,7 @@ class ParameterClient:
                 self.zmq_socket.connect(ps_server)
                 self.zmq_socket.send_multipart(send_parts)
                 self.zmq_socket.recv()
+                endpoint.reload_memory_pool()
                 self.zmq_socket.disconnect(ps_server)
         except zmq.ZMQError as e:
             status = 1
