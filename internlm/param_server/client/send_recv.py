@@ -2,6 +2,9 @@ import importlib
 import random
 import time
 
+import concurrent
+from concurrent.futures import ThreadPoolExecutor
+
 import torch
 import torch.distributed as dist
 
@@ -140,7 +143,7 @@ def try_interact_with_param_server(model, optimizer, consume_tokens):
     logger.info(f"finish query compute status and broadcast, cost: {end_query_compute_status_ts-start_query_compute_status_ts:.3f}")
     # 5. pull weight
     if compute_status == ComputeStatus.COMPUTE_SUCCESS:
-        client_recv(model, optimizer, dynamic_config=dynamic_config)
+        client_recv(model, optimizer, dynamic_config=dynamic_config, use_rdma=config.USE_DLSLIME_RDMA_TRANSFER)
         if gpc.is_rank_for_log():
             end_client_recv_ts = time.time()
             logger.info(f"finish client recv, cost: {end_client_recv_ts-end_query_compute_status_ts:.3f}")
@@ -174,15 +177,36 @@ def client_send(model, consume_tokens, dynamic_config):
         random.shuffle(layer_idxs)
         logger.info(f"shuffle send layer idx: {layer_idxs}")
 
-        for layer_id in layer_idxs:
-            layer_state_dict = send_state_dict[layer_id]
-            ps_id = get_ps_id(layer_id, dynamic_config.layer_chunks)
-            if ps_id == -1:
-                raise ValueError(f"Failed to find PS ID for layer {layer_id}.")
-            ps_server = dynamic_config.zmq_servers[ps_id]
-            send_status = client.send_update(ps_server, layer_id, layer_state_dict)
-            if send_status == 1:
-                break
+        if config.USE_DLSLIME_RDMA_TRANSFER:
+            ps_server_state_dict = {zmq_server: {} for _, zmq_server in dynamic_config.zmq_servers.items()}
+            for layer_id in layer_idxs:
+                layer_state_dict = send_state_dict[layer_id]
+                ps_id = get_ps_id(layer_id, dynamic_config.layer_chunks)
+                if ps_id == -1:
+                    raise ValueError(f"Failed to find PS ID for layer {layer_id}.")
+                ps_server = dynamic_config.zmq_servers[ps_id]
+                ps_server_state_dict[ps_server][int(layer_id)] = layer_state_dict
+            # 使用线程池（max_workers 控制最大线程数）
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                # 提交所有任务
+                futures = [
+                    executor.submit(client.send_update_rdma, ps_server, p_state_dict)
+                    for ps_server, p_state_dict in ps_server_state_dict.items()
+                ]
+                # 等待所有任务完成（可选）
+                for future in concurrent.futures.as_completed(futures):
+                    future.result()  # 检查是否有异常
+        else:
+            for layer_id in layer_idxs:
+                layer_state_dict = send_state_dict[layer_id]
+                ps_id = get_ps_id(layer_id, dynamic_config.layer_chunks)
+                if ps_id == -1:
+                    raise ValueError(f"Failed to find PS ID for layer {layer_id}.")
+                ps_server = dynamic_config.zmq_servers[ps_id]
+                send_status = client.send_update(ps_server, layer_id, layer_state_dict)
+                if send_status == 1:
+                    break
+
         if gpc.is_using_parallel_mode(ParallelMode.PIPELINE):
             dist.barrier(group=gpc.get_group(ParallelMode.PIPELINE))
             if gpc.is_last_rank(ParallelMode.PIPELINE):
@@ -240,40 +264,70 @@ def query_compute_status_and_broadcast(dp_rank, tp_rank, wp_rank, wdp_rank):
     _broadcast_object_list(dp_rank, tp_rank, wp_rank, wdp_rank, object_list)
     return object_list[0]
 
-
-def client_recv(model, optimizer: torch.optim.Optimizer = None, request_for_ckpt: bool = False, dynamic_config=None):
+send_state_dict = None
+def client_recv(model, optimizer: torch.optim.Optimizer = None, request_for_ckpt: bool = False, dynamic_config=None, use_rdma=False):
     dp_rank = gpc.get_local_rank(ParallelMode.DATA)
     tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
     wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT)
     wdp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
 
+    global send_state_dict
+    if use_rdma and send_state_dict is None:
+        send_state_dict = get_send_state_dict(model)
+
     # Receive updates for each layer
     all_recv_state_dict = {}
     recv_status = 0
     if dp_rank == 0 and tp_rank == 0 and wp_rank == 0 and wdp_rank == 0:
-        for layer_id in range(model.first_layer, model.last_layer):
-            ps_id = get_ps_id(layer_id, dynamic_config.layer_chunks)
-            if ps_id == -1:
-                raise ValueError(f"Failed to find PS ID for layer {layer_id}.")
-            ps_server = dynamic_config.zmq_servers[ps_id]
+        if use_rdma:
+            logger.info("begin dlslime RDMA RECV")
+            layer_idxs = list(send_state_dict.keys())
+            ps_server_state_dict = {zmq_server: {} for _, zmq_server in dynamic_config.zmq_servers.items()}
+            logger.info(f"Receiving: {layer_idxs} from PS Server ...")
+            for layer_id in layer_idxs:
+                layer_state_dict = send_state_dict[layer_id]
+                ps_id = get_ps_id(layer_id, dynamic_config.layer_chunks)
+                if ps_id == -1:
+                    raise ValueError(f"Failed to find PS ID for layer {layer_id}.")
+                ps_server = dynamic_config.zmq_servers[ps_id]
+                ps_server_state_dict[ps_server][int(layer_id)] = layer_state_dict
+                all_recv_state_dict.update(layer_state_dict)
+            # 使用线程池（max_workers 控制最大线程数）
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                # 提交所有任务
+                futures = [
+                    executor.submit(client.recv_update_rdma, ps_server, p_state_dict)
+                    for ps_server, p_state_dict in ps_server_state_dict.items()
+                ]
+                # 等待所有任务完成（可选）
+                for future in concurrent.futures.as_completed(futures):
+                    future.result()  # 检查是否有异常
+            logger.info(f"Successfully received updates layer {layer_idxs}.")
+        else:
+            for layer_id in range(model.first_layer, model.last_layer):
+                
+                ps_id = get_ps_id(layer_id, dynamic_config.layer_chunks)
+                if ps_id == -1:
+                    raise ValueError(f"Failed to find PS ID for layer {layer_id}.")
+                ps_server = dynamic_config.zmq_servers[ps_id]
 
-            # try to recive layer statet dict
-            recv_state_dict = None
-            retry_time = 0
-            while recv_state_dict is None and retry_time < 3:
-                _, recv_state_dict = client.receive_updates(ps_server, layer_id)
-                retry_time += 1
-                time.sleep(0.5)
+                # try to recive layer statet dict
+                recv_state_dict = None
+                retry_time = 0
+                while recv_state_dict is None and retry_time < 3:
+                    _, recv_state_dict = client.receive_updates(ps_server, layer_id)
+                    retry_time += 1
+                    time.sleep(0.5)
 
-            if recv_state_dict is None:
-                logger.error(
-                    f"Error: Unsuccessfully received updates for layer {layer_id}. The recv_state_dict is None."
-                )
-                recv_status = 1
-                break
+                if recv_state_dict is None:
+                    logger.error(
+                        f"Error: Unsuccessfully received updates for layer {layer_id}. The recv_state_dict is None."
+                    )
+                    recv_status = 1
+                    break
 
-            all_recv_state_dict.update(recv_state_dict)
-            logger.info(f"Successfully received updates for layer {layer_id}.")
+                all_recv_state_dict.update(recv_state_dict)
+                logger.info(f"Successfully received updates for layer {layer_id}.")
 
         if gpc.is_using_parallel_mode(ParallelMode.PIPELINE):
             dist.barrier(group=gpc.get_group(ParallelMode.PIPELINE))

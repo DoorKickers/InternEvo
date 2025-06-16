@@ -96,7 +96,7 @@ def try_load_model_ckpt_from_ps(ckpt_mm):
 
     if load_from_ps:
         ckpt_mm.load_from_ps = True
-        client_recv(ckpt_mm.model, optimizer=ckpt_mm.optimizer, request_for_ckpt=True, dynamic_config=ps_config)
+        client_recv(ckpt_mm.model, optimizer=ckpt_mm.optimizer, request_for_ckpt=True, dynamic_config=ps_config, use_rdma=ps_config.USE_DLSLIME_RDMA_TRANSFER)
         logger.info("Successfully load model ckpt from ps")
 
 

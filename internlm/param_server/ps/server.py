@@ -5,16 +5,20 @@ import time
 from concurrent import futures
 from queue import Queue
 from threading import Event, Lock
-from typing import Dict, List
+from typing import Any, Dict, List, Literal, Tuple, Callable
+import functools
 
+import json
+import gc
 import grpc
+
 import torch
+
 import zmq
 from loguru import logger
 
 from internlm.param_server.common import config
 from internlm.param_server.common.utils import (
-    BufferManager,
     save_ps_checkpoint,
     CustomServiceStub,
     serialize_layer,
@@ -23,18 +27,121 @@ from internlm.param_server.common.utils import (
 from internlm.param_server.proto import master_pb2, master_pb2_grpc, ps_pb2_grpc
 from internlm.param_server.proto.master_pb2 import ComputeStatus, NormStatus
 from internlm.param_server.ps.ps_service import PSControlServicer
+from internlm.param_server.transport.rdma_transport import rdma_endpoint_ctx
+
+from internlm.param_server.ps.ps_store import BufferManager
+from internlm.param_server.ps.ps_request import PSRequestHeader, RDMAConnectionInfo, RDMAOneSideRequest, LayerInfo
 
 
 class WorkerThread(threading.Thread):
-    def __init__(self, context, id, ps):
+    fn: Dict[str, Callable[[Any], None]] = {}
+    def __init__(self, context, id, ps: "ParameterServer"):
         threading.Thread.__init__(self)
-        self.context = context
+        self.context:zmq.Context = context
         self.id = id
-        self.ps = ps
+        self.ps: "ParameterServer" = ps
         self.zmq_poller = zmq.Poller()
 
+    def rdma_connect(self, header: PSRequestHeader, multi_parts: List[bytes]):
+        logger.info(f"RDMA Connection Request, {header=}")
+        rdma_connection_info = RDMAConnectionInfo.from_bytes(multi_parts[0])
+        logger.info(f"RDMA Connection Request, hash_id: {rdma_connection_info.hash_id}")
+        endpoint = rdma_endpoint_ctx().create(*rdma_connection_info.hash_id)
+        with self.ps.lock:
+            endpoint.connect(json.loads(rdma_connection_info.rdma_info))
+            logger.info(f"RDMA Connecting of {rdma_connection_info.hash_id}, {endpoint.endpoint_info=}")
+            self.zmq_socket.send_json(
+                RDMAConnectionInfo(
+                    hash_id=rdma_connection_info.hash_id,
+                    rdma_info=json.dumps(endpoint.endpoint_info)
+                ).model_dump()
+            )
+            logger.info(f"RDMA Connecting of {rdma_connection_info.hash_id} done !!!")
+
+    def rdma_put(self, header: PSRequestHeader, multi_parts: List[bytes]):
+        group_id = header.group_id
+        logger.info("rdma_put start")
+        start_time = time.time()
+        rdma_oneside_request = RDMAOneSideRequest.from_bytes(multi_parts[0])
+        assert rdma_oneside_request.opcode == "READ"
+        rdma_connection_info = rdma_oneside_request.connection_info
+        endpoint = rdma_endpoint_ctx().get(*rdma_connection_info.hash_id)
+
+        all_layer_info = rdma_oneside_request.layer_info
+        if not all_layer_info:
+            logger.warning("empty rdma put request")
+        else:
+            allocate_layer = all_layer_info[0]
+            self.ps.storage.allocate_and_rdma_register(group_id, endpoint, allocate_layer)
+            read_layer = allocate_layer
+            for allocate_layer in all_layer_info[1:]:
+                task = self.ps.storage.rdma_oneside("READ", group_id, endpoint, rdma_connection_info, read_layer, True)
+                self.ps.storage.allocate_and_rdma_register(group_id, endpoint, allocate_layer)
+                task.wait()
+                read_layer = allocate_layer
+
+            self.ps.storage.rdma_oneside("READ", group_id, endpoint, rdma_connection_info, read_layer)
+        logger.info(f"rdma_put end, total cost: {time.time() - start_time}")
+        response = f"get from group {header.group_id} successful"
+        self.zmq_socket.send(response.encode())
+        self.ps.groups_in_receiving.add(header.group_id)
+
+    def rdma_get(self, header: PSRequestHeader, multi_parts: List[bytes]):
+        group_id = header.group_id
+        logger.info("rdma_get start")
+        start_time = time.time()
+        rdma_oneside_request = RDMAOneSideRequest.from_bytes(multi_parts[0])
+        rdma_connection_info = rdma_oneside_request.connection_info
+        endpoint = rdma_endpoint_ctx().get(*rdma_connection_info.hash_id)
+
+        for layer_info in rdma_oneside_request.layer_info:
+            self.ps.storage.rdma_oneside("WRITE", group_id, endpoint, rdma_connection_info, layer_info)
+
+        logger.info(f"rdma_get end, total cost: {time.time() - start_time}")
+        response = f"get from ps {self.ps.ps_id} successful"
+        self.zmq_socket.send(response.encode())
+
+    def zmq_put(self, header: PSRequestHeader, message_parts: List[bytes]):
+        start_ts = time.time()
+        layer_id = int(message_parts[0].decode("utf-8"))
+        try:
+            layer_state_dict = deserialize_layer(header.group_id, layer_id, message_parts[1:])
+            if layer_state_dict is None:
+                self.zmq_socket.send(b"ERROR: Malformed PUT request")
+        except Exception as e:
+            logger.warning(f"worker {self.id} request from client {header.client_id} {e}")
+            self.zmq_socket.send(b"ERROR: Malformed PUT request")
+
+        with self.ps.lock:
+            self.ps.storage.add_layer_state_dict(header.group_id, layer_id, layer_state_dict)
+
+        end_ts = time.time()
+        logger.info(f"worker {self.id} Received complete state_dict from client {header.client_id} {header.group_id=} {layer_id=}, cost: {end_ts-start_ts:.3f}")
+        response = f"send to ps {self.ps.ps_id} successful"
+        self.zmq_socket.send(response.encode())
+        self.ps.groups_in_receiving.add(header.group_id)
+
+    def zmq_get(self, header: PSRequestHeader, message_parts: List[bytes]):
+        layer_id = int(message_parts[0].decode("utf-8"))
+        start_ts = time.time()
+        chunks = self.ps.serialize_consumer.get_layer_chunks(layer_id)
+        if chunks:
+            # ps_id, group_id, layer_id, start_time, state_dict
+            send_parts = [
+                b"OK",
+                str(self.ps.ps_id).encode("utf-8"),
+                str(header.group_id).encode("utf-8"),
+                str(layer_id).encode("utf-8"),
+            ] + chunks
+            self.zmq_socket.send_multipart(send_parts, copy=False, track=False)
+            end_ts = time.time()
+            logger.info(f"worker {self.id} Sent state_dict to client {header.client_id} {header.group_id=} {layer_id=} cost: {end_ts-start_ts:.3f}")
+        else:
+            self.zmq_socket.send_multipart([b"ERROR", b"State_dict not found"])
+            logger.info(f"worker {self.id} State_dict not found for client {header.client_id}")
+
     def run(self):
-        self.zmq_socket = self.context.socket(zmq.REP)
+        self.zmq_socket: zmq.Socket = self.context.socket(zmq.REP)
         self.zmq_socket.connect("inproc://backend")
         self.zmq_socket.setsockopt(zmq.SNDHWM, 0)
         self.zmq_socket.setsockopt(zmq.RCVHWM, 0)
@@ -45,70 +152,38 @@ class WorkerThread(threading.Thread):
             try:
                 events = dict(self.zmq_poller.poll(timeout=1000 * 10))  # 10 second timeout
                 if self.zmq_socket in events:
-                    start_ts = time.time()
+                    
                     message_parts = self.zmq_socket.recv_multipart()
-                    if len(message_parts) < 4:
+                    if len(message_parts) < 3:
                         logger.warning("worker {self.id} Received malformed message with insufficient parts.")
                         self.zmq_socket.send(b"ERROR: Malformed message")
                         continue
-
-                    client_id = message_parts[0].decode()
-                    request_type = message_parts[1].decode()
                     try:
-                        group_id = int(message_parts[2].decode("utf-8"))
-                        layer_id = int(message_parts[3].decode("utf-8"))
+                        request_type: Literal["RDMA_PUT", "RDMA_GET", "RDMA_CONNECT", "PUT", "GET"] = message_parts[0].decode("utf-8")
+                        header = PSRequestHeader.from_bytes(message_parts[1])
                         logger.info(
                             f"worker {self.id} Received request from client "
-                            f"{client_id}, {request_type=} {group_id=} {layer_id=}"
+                            f"{header.client_id=}, {request_type=} {header.group_id=}"
                         )
                     except ValueError:
-                        logger.warning(f"worker {self.id} Invalid group_id or layer_id from client {client_id}")
-                        self.zmq_socket.send(b"ERROR: Invalid group_id or layer_id")
+                        logger.warning(f"worker {self.id} Invalid group_id or from client {header.client_id}")
+                        self.zmq_socket.send(b"ERROR: Invalid group_id")
                         continue
-
-                    if request_type == "PUT":
-                        try:
-                            layer_state_dict = deserialize_layer(group_id, layer_id, message_parts[4:])
-                            if layer_state_dict is None:
-                                self.zmq_socket.send(b"ERROR: Malformed PUT request")
-                                continue
-                        except Exception as e:
-                            logger.warning(f"worker {self.id} request from client {client_id} {e}")
-                            self.zmq_socket.send(b"ERROR: Malformed PUT request")
-                            continue
-
-                        with self.ps.lock:
-                            self.ps.storage.add_layer_state_dict(group_id, layer_id, layer_state_dict)
-
-                        end_ts = time.time()
-                        logger.info(f"worker {self.id} Received complete state_dict from client {client_id} {group_id=} {layer_id=}, cost: {end_ts-start_ts:.3f}")
-                        response = f"send to ps {self.ps.ps_id} successful"
-                        self.zmq_socket.send(response.encode())
-                        self.ps.groups_in_receiving.add(group_id)
-
+                    if request_type == "RDMA_CONNECT":
+                        self.rdma_connect(header, message_parts[2:])
+                    elif request_type == "RDMA_PUT":
+                        self.rdma_put(header, message_parts[2:])
+                    elif request_type == "RDMA_GET":
+                        self.rdma_get(header, message_parts[2:])
+                    elif request_type == "PUT":
+                        self.zmq_put(header, message_parts[2:])
                     elif request_type == "GET":
-                        start_ts = time.time()
-                        chunks = self.ps.serialize_consumer.get_layer_chunks(layer_id)
-                        if chunks:
-                            # ps_id, group_id, layer_id, start_time, state_dict
-                            send_parts = [
-                                b"OK",
-                                str(self.ps.ps_id).encode("utf-8"),
-                                str(group_id).encode("utf-8"),
-                                str(layer_id).encode("utf-8"),
-                            ] + chunks
-                            self.zmq_socket.send_multipart(send_parts, copy=False, track=False)
-                            end_ts = time.time()
-                            logger.info(f"worker {self.id} Sent state_dict to client {client_id} {group_id=} {layer_id=} cost: {end_ts-start_ts:.3f}")
-                        else:
-                            self.zmq_socket.send_multipart([b"ERROR", b"State_dict not found"])
-                            logger.info(f"worker {self.id} State_dict not found for client {client_id}")
+                        self.zmq_get(header, message_parts[2:])
                     else:
                         logger.warning(
-                            f"worker {self.id} Unknown request type '{request_type}' from client {client_id}"
+                            f"worker {self.id} Unknown request type '{request_type}' from client {header.client_id}"
                         )
                         self.zmq_socket.send(b"ERROR: Unknown request")
-
             except zmq.ZMQError as e:
                 logger.error(f"worker {self.id} ZMQ Error: {e}")
                 response = f"send to ps {self.ps.ps_id} failed. ZMQ Error: {e}"
@@ -122,7 +197,7 @@ class WorkerThread(threading.Thread):
 
 
 class ZmqThread(threading.Thread):
-    def __init__(self, io_threads, work_threads, zmq_port, ps):
+    def __init__(self, io_threads, work_threads, zmq_port, ps: "ParameterServer"):
         threading.Thread.__init__(self)
         self.io_threads = io_threads
         self.work_threads = work_threads
@@ -203,7 +278,7 @@ class SerializeConsumer:
 
     def do_serialize(self, layer_id):
         start_ts = time.time()
-        state_dict = self.ps.get_layer_state_dict(layer_id)
+        state_dict = self.ps.storage.get_layer_state_dict(layer_id)
         end_clone_layer_ts = time.time()
         if not state_dict:
             logger.warning(f"{layer_id=} not in model_state_dict")
@@ -261,14 +336,16 @@ class ParameterServer:
 
         self.ps_id = ps_id
         self.global_num_layers = global_num_layers
-        self.model_state_dict = model_state_dict
         self.optimizer = optimizer
         self.origin_dtype = origin_dtype
         self.layer_chunk = layer_chunk
         self.heartbeat_interval = heartbeat_interval
         self.zmq_port = zmq_port
-        self.storage = BufferManager()
-
+        self.storage = BufferManager(
+            model_state_dict,
+            self.origin_dtype,
+            self.global_num_layers,
+        )
         self.groups_in_receiving = set()
         self.recved_groups = []
         self.compute_status = ComputeStatus.RECEIVING
@@ -325,30 +402,13 @@ class ParameterServer:
 
         logger.info("finish clear receiving queue")
 
-    def get_layer_state_dict(self, layer_id: int) -> Dict[str, torch.Tensor]:
-        layer_state_dict = {}
-        for key, value in self.model_state_dict.items():
-            dtype = self.origin_dtype
-            if "feed_forward.moe_layer.gate.wg.weight" in key:
-                dtype = torch.float32
-            if key.startswith("layers"):
-                layer_idx = int(key.split(".")[1])
-                if layer_idx == layer_id:
-                    layer_state_dict[key] = value.clone().to(dtype)
-            else:
-                if layer_id == 0 and (key.startswith("tok_embeddings") or key.startswith("embed_tokens")):
-                    layer_state_dict[key] = value.clone().to(dtype)
-                elif layer_id == self.global_num_layers - 1 and (key.startswith("norm") or key.startswith("output")):
-                    layer_state_dict[key] = value.clone().to(dtype)
-        return layer_state_dict
-
     def compute_pseudo_gradient_naive(self, groups: List[int]) -> Dict[str, torch.Tensor]:
         pseudo_gradient = {}
         for group_id in groups:
             for layer_id in self.layer_chunk:
                 cur_state_dict = self.storage.get_weight(group_id, layer_id)
                 for key, weight in cur_state_dict.items():
-                    local_weight = self.model_state_dict[key]
+                    local_weight = self.storage.model_state_dict[key]
                     if key not in pseudo_gradient:
                         pseudo_gradient[key] = local_weight - weight
                     else:
@@ -360,13 +420,14 @@ class ParameterServer:
 
     def get_pseudo_gradient_by_group(self, groups: List[int]) -> Dict[str, torch.Tensor]:
         start_ts = time.time()
+        logger.info(f"begin get_pseudo_gradient_by_group")
         pseudo_gradient = {}
         for group_id in groups:
             pseudo_gradient[group_id] = {}
             for layer_id in self.layer_chunk:
                 cur_state_dict = self.storage.get_weight(group_id, layer_id)
                 for key, weight in cur_state_dict.items():
-                    local_weight = self.model_state_dict[key]
+                    local_weight = self.storage.model_state_dict[key]
                     pseudo_gradient[group_id][key] = local_weight - weight.float()
         self.pseudo_gradient = pseudo_gradient
         end_ts = time.time()
@@ -417,7 +478,7 @@ class ParameterServer:
 
     def step(self, pseudo_gradient: Dict[str, torch.Tensor]):
         start_ts = time.time()
-        for key, param in self.model_state_dict.items():
+        for key, param in self.storage.model_state_dict.items():
             if key in pseudo_gradient:
                 param.grad = pseudo_gradient[key].clone()
             else:
@@ -487,7 +548,9 @@ class ParameterServer:
                         try:
                             norm_computing_start_ts = time.time()
                             self.get_pseudo_gradient_by_group(self.recved_groups)
-                            self.storage.destroy()
+                            if not config.USE_DLSLIME_RDMA_TRANSFER:
+                                self.storage.destroy()
+                                gc.collect()
                             gradient_norms = self.get_gradient_norm_by_group(self.pseudo_gradient)
                             logger.info(f"gradient_norms: {gradient_norms}")
                             self.send_norm(gradient_norms)
@@ -502,16 +565,18 @@ class ParameterServer:
                         try:
                             if self.only_communicate:
                                 self.serialize_consumer.clear()
-                                for layer_id in config.layer_chunks[self.ps_id]:
-                                    self.task_queue.put(layer_id)
+                                if not config.USE_DLSLIME_RDMA_TRANSFER:
+                                    for layer_id in config.layer_chunks[self.ps_id]:
+                                        self.task_queue.put(layer_id)
                                 self.compute_status = ComputeStatus.COMPUTE_SUCCESS
                                 logger.info("Only communicate, no update.")
                             else:
                                 computing_start_ts = time.time()
                                 if self.pseudo_gradient is None:
                                     self.get_pseudo_gradient_by_group(self.recved_groups)
-                                    self.storage.destroy()
-
+                                    if not config.USE_DLSLIME_RDMA_TRANSFER:
+                                        self.storage.destroy()
+                                        gc.collect()
                                 # weighted pseudo_gradient
                                 pseudo_gradient = self.get_weighted_pseudo_gradient(weight_factor=self.weight_factor)
 
@@ -526,8 +591,9 @@ class ParameterServer:
                                 self.weight_factor.clear()
                                 self.step(pseudo_gradient)
                                 self.serialize_consumer.clear()
-                                for layer_id in config.layer_chunks[self.ps_id]:
-                                    self.task_queue.put(layer_id)
+                                if not config.USE_DLSLIME_RDMA_TRANSFER:
+                                    for layer_id in config.layer_chunks[self.ps_id]:
+                                        self.task_queue.put(layer_id)
                                 self.compute_status = ComputeStatus.COMPUTE_SUCCESS  # Update successful
                                 logger.info("Update step completed successfully.")
                                 assert self.save_ckpt is False
@@ -572,7 +638,7 @@ class ParameterServer:
                             self.save_ckpt_path, f"ps_{self.ps_id}", "snapshot", f"{self.snapshot_counter}"
                         )
                         save_ps_checkpoint(
-                            self.model_state_dict,
+                            self.storage.model_state_dict,
                             self.optimizer,
                             save_path,
                             self.version,
@@ -589,7 +655,7 @@ class ParameterServer:
                                 self.save_ckpt_path, f"ps_{self.ps_id}", f"{self.version}_{consume_tokens}B"
                             )
                             save_ps_checkpoint(
-                                self.model_state_dict,
+                                self.storage.model_state_dict,
                                 self.optimizer,
                                 save_path,
                                 self.version,
