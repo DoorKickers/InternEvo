@@ -138,8 +138,13 @@ class TrainerBuilder(Trainer):
         self.group_weight = kwargs["group_weight"]
         if self.use_ps and gpc.get_local_rank(ParallelMode.DATA) == 0 and gpc.get_local_rank(ParallelMode.TENSOR) == 0:
             sync_step = gpc.config.get("sync_step", None)
+            check_sync_step = gpc.config.get("check_sync_step", None)
+
             if sync_step is None or sync_step < 1:
                 raise ValueError("sync_step must be a positive integer.")
+
+            if check_sync_step is None or check_sync_step < 1:
+                raise ValueError("check_sync_step must be a positive integer.")
 
             # Initialize client
             need_heartbeat = True

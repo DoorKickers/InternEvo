@@ -174,6 +174,8 @@ class ParallelContext(metaclass=SingletonMeta):
         self.consume_steps = 0
         self.use_ps = False
 
+        self.consume_check_steps = 0
+
     @property
     def config(self):
         return self._config
