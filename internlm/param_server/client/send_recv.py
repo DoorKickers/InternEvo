@@ -227,7 +227,7 @@ def client_send(model, consume_tokens, dynamic_config):
 def query_compute_status_and_broadcast_for_sync_check():
     dp_rank = gpc.get_local_rank(ParallelMode.DATA)
     tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
-    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
+    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT)
     wdp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
     is_rank_for_comm = True
     if gpc.is_using_parallel_mode(ParallelMode.PIPELINE):
