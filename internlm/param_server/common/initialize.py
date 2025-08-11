@@ -51,9 +51,15 @@ def check_state_dict(state_dict, param_shapes):
             param_key = key
         if "experts" in key:
             param_key = key[-9:]
+
+        expected_shape = param_shapes[param_key]["shape"]
+        expected_dtype = param_shapes[param_key]["dtype"]
+
         assert (
-            value.shape == param_shapes[param_key]
-        ), f"Shape mismatch for parameter {key}, expected {param_shapes[param_key]}, got {value.shape}"
+            value.shape == expected_shape
+        ), f"Shape mismatch for parameter {key}, expected {expected_shape}, got {value.shape}"
+        if value.dtype != expected_dtype:
+            state_dict[key] = value.to(expected_dtype)
 
 
 OPTIMIZER_MAP = {

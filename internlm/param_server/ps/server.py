@@ -328,9 +328,13 @@ class ParameterServer:
     def get_layer_state_dict(self, layer_id: int) -> Dict[str, torch.Tensor]:
         layer_state_dict = {}
         for key, value in self.model_state_dict.items():
-            dtype = self.origin_dtype
-            if "feed_forward.moe_layer.gate.wg.weight" in key:
-                dtype = torch.float32
+            param_key = None
+            if key.startswith("layers."):
+                param_key = ".".join(key.split(".")[2:])
+            else:
+                param_key = key
+            dtype = config.param_shapes.get(param_key, {}).get("dtype", self.origin_dtype)
+
             if key.startswith("layers"):
                 layer_idx = int(key.split(".")[1])
                 if layer_idx == layer_id:
