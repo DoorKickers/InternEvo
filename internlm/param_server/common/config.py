@@ -145,31 +145,31 @@ def get_param_shapes(config):
 
     # Define parameter shapes
     param_shapes = {
-        "attention_norm.weight": (hidden_size,),  # Layer 23 attention norm weight
-        "ffn_norm.weight": (hidden_size,),  # Layer 23 feedforward norm weight
-        "attention.wqkv.weight": (int(q_dim + 2 * kv_dim), hidden_size),  # Combined QKV weight for attention
-        "attention.wq.weight": (q_dim, hidden_size),  # Query weight for attention
-        "attention.wk.weight": (kv_dim, hidden_size),  # Key weight for attention
-        "attention.wv.weight": (kv_dim, hidden_size),  # Value weight for attention
-        "attention.wo.weight": (hidden_size, q_dim),  # Output projection weight for attention
-        "feed_forward.w1.weight": (int(mlp_hidden_features), hidden_size),  # MLP first layer weight
-        "feed_forward.w3.weight": (int(mlp_hidden_features), hidden_size),  # MLP third layer weight
-        "feed_forward.w2.weight": (hidden_size, int(mlp_hidden_features)),  # MLP second layer weight
-        "feed_forward.fused_w1_w3.weight": (int(mlp_hidden_features) * 2, hidden_size),  # Fused first and third layer weight
-        "norm.weight": (hidden_size,),  # Final normalization layer weight
-        "tok_embeddings.weight": (vocab_size, hidden_size),  # Token embedding matrix
-        "output.weight": (vocab_size, hidden_size),  # Output projection weight
-        "embed_tokens.weight": (vocab_size, hidden_size), # Token embedding matrix of qwen2
-        "attention.wq.bias": (q_dim,),
-        "attention.wk.bias": (kv_dim,),
-        "attention.wv.bias": (kv_dim,),
-        "attention.wo.bias": (q_dim,),
-        "attention.k_norm.weight": (attn_head_dim,),
-        "attention.q_norm.weight": (attn_head_dim,),
-        "feed_forward.moe_layer.gate.wg.weight": (attn_head_dim, hidden_size),
-        "w1.weight": (mlp_ratio * hidden_size, hidden_size),
-        "w2.weight": (hidden_size, mlp_ratio * hidden_size),
-        "w3.weight": (mlp_ratio * hidden_size, hidden_size),
+        "attention_norm.weight": {"shape": (hidden_size,), "dtype": torch.float32},  # Layer 23 attention norm weight
+        "ffn_norm.weight": {"shape": (hidden_size,), "dtype": torch.float32},  # Layer 23 feedforward norm weight
+        "attention.wqkv.weight": {"shape": (int(q_dim + 2 * kv_dim), hidden_size), "dtype": torch.bfloat16},  # Combined QKV weight for attention
+        "attention.wq.weight": {"shape": (q_dim, hidden_size), "dtype": torch.bfloat16},  # Query weight for attention
+        "attention.wk.weight": {"shape": (kv_dim, hidden_size), "dtype": torch.bfloat16},  # Key weight for attention
+        "attention.wv.weight": {"shape": (kv_dim, hidden_size), "dtype": torch.bfloat16},  # Value weight for attention
+        "attention.wo.weight": {"shape": (hidden_size, q_dim), "dtype": torch.bfloat16},  # Output projection weight for attention
+        "feed_forward.w1.weight": {"shape": (int(mlp_hidden_features), hidden_size), "dtype": torch.bfloat16},  # MLP first layer weight
+        "feed_forward.w3.weight": {"shape": (int(mlp_hidden_features), hidden_size), "dtype": torch.bfloat16},  # MLP third layer weight
+        "feed_forward.w2.weight": {"shape": (hidden_size, int(mlp_hidden_features)), "dtype": torch.bfloat16},  # MLP second layer weight
+        "feed_forward.fused_w1_w3.weight": {"shape": (int(mlp_hidden_features) * 2, hidden_size), "dtype": torch.bfloat16},  # Fused first and third layer weight
+        "norm.weight": {"shape": (hidden_size,), "dtype": torch.float32},  # Final normalization layer weight
+        "tok_embeddings.weight": {"shape": (vocab_size, hidden_size), "dtype": torch.bfloat16},  # Token embedding matrix
+        "output.weight": {"shape": (vocab_size, hidden_size), "dtype": torch.bfloat16},  # Output projection weight
+        "embed_tokens.weight": {"shape": (vocab_size, hidden_size), "dtype": torch.bfloat16}, # Token embedding matrix of qwen2
+        "attention.wq.bias": {"shape": (q_dim,), "dtype": torch.bfloat16},
+        "attention.wk.bias": {"shape": (kv_dim,), "dtype": torch.bfloat16},
+        "attention.wv.bias": {"shape": (kv_dim,), "dtype": torch.bfloat16},
+        "attention.wo.bias": {"shape": (q_dim,), "dtype": torch.bfloat16},
+        "attention.k_norm.weight": {"shape": (attn_head_dim,), "dtype": torch.bfloat16},
+        "attention.q_norm.weight": {"shape": (attn_head_dim,), "dtype": torch.bfloat16},
+        "feed_forward.moe_layer.gate.wg.weight": {"shape": (attn_head_dim, hidden_size), "dtype": torch.float32},
+        "w1.weight": {"shape": (mlp_ratio * hidden_size, hidden_size), "dtype": torch.bfloat16},
+        "w2.weight": {"shape": (hidden_size, mlp_ratio * hidden_size), "dtype": torch.bfloat16},
+        "w3.weight": {"shape": (mlp_ratio * hidden_size, hidden_size), "dtype": torch.bfloat16},
     }
 
     return param_shapes

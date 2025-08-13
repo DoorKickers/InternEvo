@@ -79,7 +79,7 @@ def is_time_to_load_ckpt_from_ps(load_path):
 def try_load_model_ckpt_from_ps(ckpt_mm):
     load_from_ps = True
     load_content = ckpt_mm.load_ckpt_info["content"]
-    if gpc.use_ps:
+    if gpc.config.use_ps:
         # force to load from ps
         if gpc.config.ckpt.load_ckpt_from_ps:
             load_from_ps = True
@@ -357,7 +357,7 @@ class CheckpointManager:
         # Auto-reload latest checkpoint, it will overwrite the setting of 'load_ckpt_info'.
         self.auto_resume = get_config_value(ckpt_config, "auto_resume", None)
         # notice!
-        if gpc.use_ps:
+        if gpc.config.use_ps:
             self.load_ckpt_info = dict(path=None, content=("model",), ckpt_type="internevo")
         if self.auto_resume is None:  # (legacy): Try Compatible with old interfaces
             self.auto_resume = auto_resume_sanity_check(ckpt_config)

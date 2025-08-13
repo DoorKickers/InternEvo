@@ -241,3 +241,4 @@ monitor = dict(
 )
 
 sync_step = 16
+check_sync_step = 2

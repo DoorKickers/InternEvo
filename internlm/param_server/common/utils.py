@@ -107,12 +107,13 @@ def serialize_layer(state_dict: Dict[str, torch.Tensor]) -> List[bytes]:
         state_dict(Dict[str, torch.Tensor]): layer weight
 
     Returns:
-        List[bytes]: data_size, key_num, chunk_lens_of_one_key, keys, shapes, chunks
+        List[bytes]: data_size, key_num, chunk_lens_of_one_key, keys, shapes, dtypes, chunks
     """
     start_ts = time.time()
     data_size = 0
     keys = []
     shapes = []
+    dtypes = []
     chunks = []
     chunk_lens = []
 
@@ -125,10 +126,17 @@ def serialize_layer(state_dict: Dict[str, torch.Tensor]) -> List[bytes]:
         chunks += serialized_parts
         keys.append(key.encode("utf-8"))
         shapes.append(list_to_str(value.shape).encode("utf-8"))
+        dtypes.append(str(value.dtype).encode("utf-8"))
         chunk_lens.append(len(serialized_parts))
 
     key_num = len(state_dict)
-    result = [str(data_size).encode("utf-8"), str(key_num).encode("utf-8"), list_to_str(chunk_lens).encode("utf-8")] + keys + shapes + chunks
+    result = (
+        [str(data_size).encode("utf-8"), str(key_num).encode("utf-8"), list_to_str(chunk_lens).encode("utf-8")]
+        + keys
+        + shapes
+        + dtypes
+        + chunks
+    )
     end_ts = time.time()
     logger.info(f"serialize_layer success, cost: {end_ts-start_ts:.3f}. length: {data_size}")
     return result
@@ -144,23 +152,28 @@ def deserialize_layer(group_id: int, layer_id: int, message_parts: List[bytes]) 
         data_size = int(message_parts[0].decode("utf-8"))
         key_num = int(message_parts[1].decode("utf-8"))
         chunk_lens = str_to_list(message_parts[2].decode("utf-8"))
-        chunk_num = 3 + 2*key_num + sum(chunk_lens)
+        chunk_num = 3 + 3 * key_num + sum(chunk_lens)
         if len(message_parts) != chunk_num:
             raise ValueError(f"invalid PUT request, expect {chunk_num=} parameters, but got {len(message_parts)=}")
-        keys = [key.decode("utf-8") for key in message_parts[3:3+key_num]]
-        shapes = [str_to_list(shape_str.decode("utf-8")) for shape_str in message_parts[3+key_num:3+key_num*2]]
+        keys = [key.decode("utf-8") for key in message_parts[3 : 3 + key_num]]
+        shapes = [str_to_list(shape_str.decode("utf-8")) for shape_str in message_parts[3 + key_num : 3 + key_num * 2]]
+        dtypes = [
+            torch_dtype_from_str(dtype_str.decode("utf-8"))
+            for dtype_str in message_parts[3 + key_num * 2 : 3 + key_num * 3]
+        ]
     except ValueError as e:
         logger.warning(f"Invalid PUT parameters from {group_id=} {layer_id=} {e}")
         return None
 
-    start_idx = 3 + key_num*2
+    start_idx = 3 + key_num * 3
     total_len = 0
     state_dict = {}
     for idx in range(key_num):
         key = keys[idx]
         shape = shapes[idx]
+        dtype = dtypes[idx]
         chunk_len = chunk_lens[idx]
-        tensor_data = b"".join(message_parts[start_idx : start_idx+chunk_len])
+        tensor_data = b"".join(message_parts[start_idx : start_idx + chunk_len])
         start_idx += chunk_len
         total_len += len(tensor_data)
         try:
@@ -175,7 +188,8 @@ def deserialize_layer(group_id: int, layer_id: int, message_parts: List[bytes]) 
     if data_size != total_len:
         logger.warning(
             f"Received incomplete state_dict from {group_id=} {layer_id=}, "
-            f"Expected {data_size} bytes, got {total_len} bytes.")
+            f"Expected {data_size} bytes, got {total_len} bytes."
+        )
         return None
 
     check_state_dict(state_dict, param_shapes)
