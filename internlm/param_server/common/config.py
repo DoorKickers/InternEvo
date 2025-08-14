@@ -9,15 +9,14 @@ random.seed(0)
 
 
 ps_servers = {
-    0: "10.10.41.41",
-    1: "10.10.41.42",
+    0: "10.201.6.11",
 }
 
-USE_DLSLIME_RDMA_TRANSFER=False
+USE_DLSLIME_RDMA_TRANSFER=True
 
 NUM_PS = len(ps_servers)
 
-MASTER_ADDR = "10.10.41.41"
+MASTER_ADDR = "10.201.6.11"
 MASTER_PORT = 55500
 ZMQ_PORT = 55544
 GRPC_PORT = 55580
@@ -69,9 +68,18 @@ MODEL_PARAM_DICT["QWEN_3_30B"]["VOCAB_SIZE"] = 151936
 MODEL_PARAM_DICT["QWEN_3_30B"]["HEAD_DIM"] = 128
 
 
+MODEL_PARAM_DICT["QWEN_3_235B"] = dict()
+MODEL_PARAM_DICT["QWEN_3_235B"]["NUM_LAYERS"] = 8
+MODEL_PARAM_DICT["QWEN_3_235B"]["MLP_RATIO"] = 768 / 2048
+MODEL_PARAM_DICT["QWEN_3_235B"]["HIDDEN_SIZE"] = 4096
+MODEL_PARAM_DICT["QWEN_3_235B"]["NUM_ATTENTION_HEAD"] = 64
+MODEL_PARAM_DICT["QWEN_3_235B"]["NUM_KV_ATTENTION_HEAD"] = 4
+MODEL_PARAM_DICT["QWEN_3_235B"]["VOCAB_SIZE"] = 151936
+MODEL_PARAM_DICT["QWEN_3_235B"]["HEAD_DIM"] = 128
+
 if model_type not in MODEL_TYPE_LIST:
     model_type = "INTERNLM_2_7B"
-model_type = "QWEN_3_30B"
+model_type = "QWEN_3_235B"
 NUM_LAYERS = MODEL_PARAM_DICT[model_type]["NUM_LAYERS"]
 MLP_RATIO = MODEL_PARAM_DICT[model_type]["MLP_RATIO"]
 HIDDEN_SIZE = MODEL_PARAM_DICT[model_type]["HIDDEN_SIZE"]
@@ -179,7 +187,8 @@ ckpt = dict(
     auto_resume=False,
     # load_ckpt_path="/data/InternEvo-psserver/20B_ckpt/internlm2/1_merged/model_tp0_pp0.pt",
     # load_ckpt_path="/datapool/caikun/ckpt/internlm2_7b_ckpt/model_tp0_pp0.pt",
-    load_ckpt_path="/datapool/caikun/ckpt/qwen3_30b_a3b/model_wp0_pp0.pt",
+    # load_ckpt_path="/datapool/caikun/ckpt/qwen3_30b_a3b/model_wp0_pp0.pt",
+    load_ckpt_path="/datapool/caikun/mx/3dps/InternEvo/ckpt-bak/merged_qwen3_235B.pt",
     #load_ckpt_path="/datapool/zhanglantian/InternEvo/tools/zlt_test_convert/test.pt",
     save_ckpt_path="./ps_ckpt",
 )

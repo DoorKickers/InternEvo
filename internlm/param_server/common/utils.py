@@ -198,6 +198,12 @@ def deserialize_layer(group_id: int, layer_id: int, message_parts: List[bytes]) 
     return state_dict
 
 
+def torch_dtype_from_str(dtype_str: str) -> torch.dtype:
+    if not dtype_str.startswith("torch."):
+        raise ValueError(f"Invalid dtype string: {dtype_str}")
+    return getattr(torch, dtype_str[6:])
+
+
 def save_state_dict(state_dict, path, name):
     os.makedirs(path, exist_ok=True)
     file_path = os.path.join(path, f"{name}")
