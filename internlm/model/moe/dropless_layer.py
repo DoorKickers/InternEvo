@@ -36,10 +36,32 @@ try:
     import grouped_gemm
 
     GEMM_INSTALLED = True
+    # Define permute and unpermute functions for grouped_gemm
+    def gemm_permute(tokens, indices, num_out_tokens=None, padded_mode=False):
+        return grouped_gemm.ops.permute(tokens, indices, num_out_tokens)
+    
+    def gemm_unpermute(permuted_tokens, sorted_indices, probs=None, padded_mode=False, restore_shape=None):
+        return grouped_gemm.ops.unpermute(permuted_tokens, sorted_indices, probs)
+        
 except (ModuleNotFoundError, ImportError):
     # Fail silently so we don't spam logs unnecessarily if user isn't using gemm
     GEMM_INSTALLED = False
-    pass
+    try:
+        # Try to import mindspeed operations as fallback
+        from mindspeed.ops.npu_moe_token_permute import npu_moe_token_permute as permute
+        from mindspeed.ops.npu_moe_token_unpermute import npu_moe_token_unpermute as unpermute
+        
+        # Define permute and unpermute functions for mindspeed
+        def gemm_permute(tokens, indices, num_out_tokens=None, padded_mode=False):
+            return permute(tokens, indices, num_out_tokens, padded_mode)
+        
+        def gemm_unpermute(permuted_tokens, sorted_indices, probs=None, padded_mode=False, restore_shape=None):
+            return unpermute(permuted_tokens, sorted_indices, probs, padded_mode, restore_shape)
+            
+    except (ModuleNotFoundError, ImportError):
+        # If neither grouped_gemm nor mindspeed is available, set functions to None
+        gemm_permute = None
+        gemm_unpermute = None
 
 # global llm logger
 logger = get_logger(__file__)
@@ -260,7 +282,7 @@ class DroplessMoELayer(BaseMoELayer):
             self.token_permutation_func = self.token_permutation_by_alltoall
             self.token_unpermutation_func = self.token_unpermutation_by_alltoall
             self.enable_fused_permute = (
-                GEMM_INSTALLED and enable_fused_permute and not drop_and_pad and capacity_factor is None
+                gemm_permute is not None and gemm_unpermute is not None and enable_fused_permute and not drop_and_pad and capacity_factor is None
             )
             self.input_splits = None
             self.output_splits = None
@@ -655,8 +677,8 @@ class DroplessMoELayer(BaseMoELayer):
         if self.device_sync_point == "before_permutation_1":
             internlm_accelerator.current_stream().synchronize()
         if self.enable_fused_permute:
-            permutated_local_input_tokens, self.reversed_local_input_permutation_mapping = grouped_gemm.ops.permute(
-                reshaped_inputs, indices.to(torch.int32), self.num_out_tokens
+            permutated_local_input_tokens, self.reversed_local_input_permutation_mapping = gemm_permute(
+                reshaped_inputs, indices.to(torch.int32), self.num_out_tokens, self.drop_and_pad
             )
         else:
             permutated_local_input_tokens, self.reversed_local_input_permutation_mapping = self.permute(
@@ -716,10 +738,12 @@ class DroplessMoELayer(BaseMoELayer):
 
         # Unpermutation 1: AlltoAll output to output
         if self.enable_fused_permute:
-            output = grouped_gemm.ops.unpermute(
+            output = gemm_unpermute(
                 permutated_local_input_tokens,
                 self.reversed_local_input_permutation_mapping,
-                expert_weights.to(torch.float32),
+                expert_weights.to(torch.bfloat16),
+                self.drop_and_pad,
+                self.hiddden_shape_before_permute,
             )
         else:
             output = self.unpermute(
@@ -879,3 +903,4 @@ class DroplessMoELayer(BaseMoELayer):
         assert num_experts == self.num_experts
         scale = self.num_experts / (tokens * self.topk)
         return scale * torch.dot(num_local_tokens_per_expert.to(gates.dtype), gates.mean(dim=0))
+
