@@ -459,16 +459,16 @@ def args_sanity_check():
     # for NPU accelerator supports: 1）FA-True + Packed-True 2) FA-False + Packed-False
     # for DIPU accelerator supports: 1）FA-True + Packed-False 2) FA-False + Packed-False
     # for GPU accelerator supports: 1）FA-True + Packed-True 2) FA-False + Packed-False
-    if gpc.config.parallel["tensor"][
-        "mode"
-    ] == TensorParallelMode.isp.name and internlm_accelerator.get_accelerator_backend() in [
-        AcceleratorType.NPU,
-        AcceleratorType.DIPU,
-        AcceleratorType.DITORCH,
-    ]:
-        assert (
-            gpc.config.data.use_packed_dataset is False
-        ), "only unpacked data is supported when tensor parallel mode is isp and accelerator type is NPU or DIPU"
+#     if gpc.config.parallel["tensor"][
+#         "mode"
+#     ] == TensorParallelMode.isp.name and internlm_accelerator.get_accelerator_backend() in [
+#         AcceleratorType.NPU,
+#         AcceleratorType.DIPU,
+#         AcceleratorType.DITORCH,
+#     ]:
+#         assert (
+#             gpc.config.data.use_packed_dataset is False
+#         ), "only unpacked data is supported when tensor parallel mode is isp and accelerator type is NPU or DIPU"
 
     if internlm_accelerator.get_accelerator_backend() in [
         AcceleratorType.NPU,

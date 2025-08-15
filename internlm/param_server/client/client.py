@@ -99,6 +99,10 @@ class ParameterClient:
             self.rdma_connection()
 
     def rdma_connection(self):
+        if not config.USE_DLSLIME_RDMA_TRANSFER:
+            logger.info("RDMA functionality is disabled. Set USE_DLSLIME_RDMA_TRANSFER=True to enable.")
+            return
+            
         dp_rank = gpc.get_local_rank(ParallelMode.DATA)
         tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
         wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
