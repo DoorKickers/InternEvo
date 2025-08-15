@@ -1036,25 +1036,26 @@ class HybridZeroOptimizer(BaseOptimizer):
 
         self.optim.load_state_dict(optim_states)
 
-        # load fp32 model weight.
-        flat_fp32_weights = states["flat_fp32_weights"]
-        assert set(flat_fp32_weights.keys()) == set(self._fp32_flat_param_groups_of_current_rank)
-        for group_id, param in flat_fp32_weights.items():
-            if self._zero_local_rank[group_id] not in self.param_group_no_params_ranks[group_id]:
-                self_param = self._fp32_flat_param_groups_of_current_rank[group_id]
-                assert (
-                    self_param.shape == param.shape
-                ), f"The loaded parameter shape is inconsistent, {self_param.shape} != {param.shape}"
-                self_param.data.copy_(param.data)
+        if not gpc.use_ps or not gpc.config.ckpt.load_ckpt_from_ps:
+            # load fp32 model weight.
+            flat_fp32_weights = states["flat_fp32_weights"]
+            assert set(flat_fp32_weights.keys()) == set(self._fp32_flat_param_groups_of_current_rank)
+            for group_id, param in flat_fp32_weights.items():
+                if self._zero_local_rank[group_id] not in self.param_group_no_params_ranks[group_id]:
+                    self_param = self._fp32_flat_param_groups_of_current_rank[group_id]
+                    assert (
+                        self_param.shape == param.shape
+                    ), f"The loaded parameter shape is inconsistent, {self_param.shape} != {param.shape}"
+                    self_param.data.copy_(param.data)
 
-        # Load the fp16 model weights.
-        for group_id in range(len(self._fp16_param_groups)):
-            if self._zero_local_rank[group_id] not in self.param_group_no_params_ranks[group_id]:
-                fp16_param = self._param_store.get_flat_fp16_param_by_rank_group(
-                    rank=self._zero_local_rank[group_id], group_id=group_id
-                )
-                fp32_param = self._fp32_flat_param_groups_of_current_rank[group_id]
-                fp16_param.data.copy_(fp32_param)
+            # Load the fp16 model weights.
+            for group_id in range(len(self._fp16_param_groups)):
+                if self._zero_local_rank[group_id] not in self.param_group_no_params_ranks[group_id]:
+                    fp16_param = self._param_store.get_flat_fp16_param_by_rank_group(
+                        rank=self._zero_local_rank[group_id], group_id=group_id
+                    )
+                    fp32_param = self._fp32_flat_param_groups_of_current_rank[group_id]
+                    fp16_param.data.copy_(fp32_param)
 
         if "zero_devide_optim_plan" in states:
             self.params_per_rank_id_dict = states["zero_devide_optim_plan"]

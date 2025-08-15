@@ -23,7 +23,7 @@ except (ModuleNotFoundError, ImportError):
 
 try:
     # grouped_gemm on GPU
-    from grouped_gemm.backend import gmm as gmm_ops
+    from apex.grouped_gemm.grouped_gemm import _gmm as gmm_ops
 except (ModuleNotFoundError, ImportError):
     # grouped_gemm on NPU
     try:
