@@ -6,7 +6,18 @@ import json
 
 from loguru import logger
 
-import dlslime
+try:
+    from internlm.param_server.common.config import USE_DLSLIME_RDMA_TRANSFER
+    if USE_DLSLIME_RDMA_TRANSFER:
+        import dlslime
+        DLSLIME_AVAILABLE = True
+    else:
+        DLSLIME_AVAILABLE = False
+        dlslime = None
+except ImportError:
+    USE_DLSLIME_RDMA_TRANSFER = False
+    DLSLIME_AVAILABLE = False
+    dlslime = None
 
 import torch
 
@@ -71,11 +82,14 @@ class BufferManager:
         self,
         opcode: Literal["READ", "WRITE"],
         group_id,
-        endpoint: dlslime.RDMAEndpoint,
+        endpoint,
         rdma_connection_info: RDMAConnectionInfo, 
         layer_info: LayerInfo,
         async_op=False
     ):
+        if not DLSLIME_AVAILABLE:
+            raise RuntimeError("dlslime is not available. Set USE_DLSLIME_RDMA_TRANSFER=True to enable RDMA functionality.")
+        
         logger.info(f"RDMA {opcode} for layer {layer_info.layer_id}")
         layer_id = layer_info.layer_id
         tensor_info = layer_info.tensor_info
@@ -104,9 +118,12 @@ class BufferManager:
 
     def allocate_and_rdma_register(self,
         group_id: int,
-        endpoint: dlslime.RDMAEndpoint,
+        endpoint,
         layer_info: LayerInfo
     ):
+        if not DLSLIME_AVAILABLE:
+            raise RuntimeError("dlslime is not available. Set USE_DLSLIME_RDMA_TRANSFER=True to enable RDMA functionality.")
+        
         layer_id = layer_info.layer_id
         tensor_info = layer_info.tensor_info
         layer_state_dict = {}

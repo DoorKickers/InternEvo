@@ -43,6 +43,10 @@ class WorkerThread(threading.Thread):
         self.zmq_poller = zmq.Poller()
 
     def rdma_connect(self, header: PSRequestHeader, multi_parts: List[bytes]):
+        if not config.USE_DLSLIME_RDMA_TRANSFER:
+            logger.warning("RDMA functionality is disabled. Set USE_DLSLIME_RDMA_TRANSFER=True to enable.")
+            return
+            
         logger.info(f"RDMA Connection Request, {header=}")
         rdma_connection_info = RDMAConnectionInfo.from_bytes(multi_parts[0])
         logger.info(f"RDMA Connection Request, hash_id: {rdma_connection_info.hash_id}")
@@ -59,6 +63,10 @@ class WorkerThread(threading.Thread):
             logger.info(f"RDMA Connecting of {rdma_connection_info.hash_id} done !!!")
 
     def rdma_put(self, header: PSRequestHeader, multi_parts: List[bytes]):
+        if not config.USE_DLSLIME_RDMA_TRANSFER:
+            logger.warning("RDMA functionality is disabled. Set USE_DLSLIME_RDMA_TRANSFER=True to enable.")
+            return
+            
         group_id = header.group_id
         logger.info("rdma_put start")
         start_time = time.time()
@@ -87,6 +95,10 @@ class WorkerThread(threading.Thread):
         self.ps.groups_in_receiving.add(header.group_id)
 
     def rdma_get(self, header: PSRequestHeader, multi_parts: List[bytes]):
+        if not config.USE_DLSLIME_RDMA_TRANSFER:
+            logger.warning("RDMA functionality is disabled. Set USE_DLSLIME_RDMA_TRANSFER=True to enable.")
+            return
+            
         group_id = header.group_id
         logger.info("rdma_get start")
         start_time = time.time()
