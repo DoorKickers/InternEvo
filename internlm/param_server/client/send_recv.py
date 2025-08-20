@@ -667,7 +667,7 @@ def recover_local_state_tp_or_wp(model, recv_state_dict):
 def client_recv_ckpt_status():
     dp_rank = gpc.get_local_rank(ParallelMode.DATA)
     tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
-    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
+    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT)
     wdp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
     ckpt_status = 0
     retry_print_flag = False
