@@ -97,14 +97,14 @@ def try_interact_with_param_server(model, optimizer, consume_tokens):
     if not force_sync and gpc.consume_steps < gpc.config.sync_step:
         return
 
-
     if gpc.is_rank_for_log():
         start_ts = time.time()
         logger.info("start try_interact_with_param_server")
     gpc.consume_steps = 0
+    gpc.consume_check_steps = 0
     dp_rank = gpc.get_local_rank(ParallelMode.DATA)
     tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
-    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
+    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT)
     wdp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
 
     # 1. query whether can push weight
@@ -162,7 +162,6 @@ def try_interact_with_param_server(model, optimizer, consume_tokens):
             logger.info(f"finish client recv, cost: {end_client_recv_ts-end_query_compute_status_ts:.3f}")
     else:
         logger.error(f"Get abnormal computing status: {compute_status}. Pass client receiving.")
-
     status = 0
 
     if gpc.is_rank_for_log():
@@ -179,7 +178,7 @@ def client_send(model, consume_tokens, dynamic_config):
     send_state_dict = get_send_state_dict(model)
     dp_rank = gpc.get_local_rank(ParallelMode.DATA)
     tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
-    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
+    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT)
     wdp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
 
     send_status = 0
@@ -274,7 +273,7 @@ def query_compute_status_and_broadcast(dp_rank, tp_rank, wp_rank, wdp_rank):
 def client_recv(model, optimizer: torch.optim.Optimizer = None, request_for_ckpt: bool = False, dynamic_config=None):
     dp_rank = gpc.get_local_rank(ParallelMode.DATA)
     tp_rank = gpc.get_local_rank(ParallelMode.TENSOR)
-    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
+    wp_rank = gpc.get_local_rank(ParallelMode.WEIGHT)
     wdp_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
 
     # Receive updates for each layer
