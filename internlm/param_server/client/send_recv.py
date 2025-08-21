@@ -162,7 +162,6 @@ def try_interact_with_param_server(model, optimizer, consume_tokens):
             logger.info(f"finish client recv, cost: {end_client_recv_ts-end_query_compute_status_ts:.3f}")
     else:
         logger.error(f"Get abnormal computing status: {compute_status}. Pass client receiving.")
-    
     status = 0
 
     if gpc.is_rank_for_log():
@@ -347,10 +346,10 @@ def get_send_state_dict(model):
 
 
 def get_send_state_dict_ep(model):
-    assert not gpc.is_using_parallel_mode(ParallelMode.EXPERT_WEIGHT), "3dps not support expert_weight parallel mode"
-
-    dst = gpc.get_ranks_in_group(ParallelMode.EXPERT)[0]
-    world_size = gpc.get_world_size(ParallelMode.EXPERT)
+    ep_src = gpc.get_ranks_in_group(ParallelMode.EXPERT)[0]
+    ep_world_size = gpc.get_world_size(ParallelMode.EXPERT)
+    ewp_world_size = gpc.get_world_size(ParallelMode.EXPERT_WEIGHT)
+    ewp_src = gpc.get_ranks_in_group(ParallelMode.EXPERT_WEIGHT)[0]
 
     if gpc.get_local_rank(ParallelMode.EXPERT_DATA) == 0:
         if gpc.is_rank_for_log():
@@ -363,28 +362,49 @@ def get_send_state_dict_ep(model):
             if MOE_LAYER_KEY not in fqn:
                 continue
 
-            if gpc.get_global_rank() == dst:
-                gather_list = [torch.empty_like(tensor) for _ in range(world_size)]
+            out_dim = tensor.size(1)
+
+            send_tensor = tensor.t().contiguous().reshape(out_dim, model.num_experts // ep_world_size, -1).contiguous()
+            # [out_dim, num_experts / ep_size * in_dim / ewp_size]
+
+            if gpc.get_global_rank() == ep_src:
+                gather_list = [torch.empty_like(send_tensor) for _ in range(ep_world_size)]
             else:
                 gather_list = None
-            dist.gather(tensor, gather_list, dst=dst, group=gpc.get_group(ParallelMode.EXPERT))
+            dist.gather(send_tensor, gather_list, dst=ep_src, group=gpc.get_group(ParallelMode.EXPERT))
 
-            if gpc.get_global_rank() == dst:
-                complete_tensor = torch.cat(gather_list, dim=0)
-                complete_tensor = complete_tensor.t().contiguous()
-                expert_tensors = list(torch.chunk(complete_tensor, model.num_experts, dim=1))
-                # fqn is like "layers.0.feed_forward.moe_layer.experts.wrapped_experts.0.w1.weight"
-                key_info = fqn.split(".")
-                layer_idx = int(key_info[1]) + model.first_layer
-                key_info[1] = str(layer_idx)
-                layer_key_prefix = '.'.join(key_info[:6])
-                layer_key_post = '.'.join(key_info[7:])
-                if layer_idx not in send_state_dict:
-                    send_state_dict[layer_idx] = dict()
+            if gpc.get_global_rank() == ep_src:
+                send_tensor2 = torch.cat(gather_list, dim=1).contiguous()
+                # [out_dim, num_experts, in_dim / ewp_size]
 
-                for expert_idx in range(model.num_experts):
-                    layer_key = layer_key_prefix + "." + str(expert_idx) + "." + layer_key_post
-                    send_state_dict[layer_idx][layer_key] = expert_tensors[expert_idx].contiguous().to("cpu")
+                if gpc.get_global_rank() == ewp_src:
+                    gather_list = [torch.empty_like(send_tensor2) for _ in range(ewp_world_size)]
+                else:
+                    gather_list = None
+
+                dist.gather(send_tensor2, gather_list, dst=ewp_src, group=gpc.get_group(ParallelMode.EXPERT_WEIGHT))
+
+                if gpc.get_global_rank() == ewp_src:
+                    complete_tensor = torch.cat(gather_list, dim=2).contiguous()
+                    # [out_dim, num_experts, in_dim]
+
+                    expert_tensors = list(torch.chunk(complete_tensor, model.num_experts, dim=1))
+                    for i in range(len(expert_tensors)):
+                        expert_tensors[i] = expert_tensors[i].contiguous().reshape(expert_tensors[i].size(0), -1).contiguous()
+                    # list of [out_dim, in_dim] length of num_experts
+
+                    # fqn is like "layers.0.feed_forward.moe_layer.experts.wrapped_experts.0.w1.weight"
+                    key_info = fqn.split(".")
+                    layer_idx = int(key_info[1]) + model.first_layer
+                    key_info[1] = str(layer_idx)
+                    layer_key_prefix = '.'.join(key_info[:6])
+                    layer_key_post = '.'.join(key_info[7:])
+                    if layer_idx not in send_state_dict:
+                        send_state_dict[layer_idx] = dict()
+
+                    for expert_idx in range(model.num_experts):
+                        layer_key = layer_key_prefix + "." + str(expert_idx) + "." + layer_key_post
+                        send_state_dict[layer_idx][layer_key] = expert_tensors[expert_idx].contiguous().to("cpu")
 
         if gpc.is_rank_for_log():
             end_ts = time.time()
@@ -459,6 +479,7 @@ def get_send_state_dict_tp_or_wp(model):
 
 
 def recover_local_state(model, optimizer, recv_state_dict):
+
     if gpc.is_rank_for_log():
         logger.info("Begin to recover local state dict.")
         start_ts = time.time()
@@ -507,42 +528,70 @@ def _filter_moe_state_dict(state_dict, first_layer, last_layer, num_experts):
             result[layer_id][tensor_name] = expert_tensor_list
     return result
 
-
 def recover_local_state_ep(model, recv_state_dict):
-    assert not gpc.is_using_parallel_mode(ParallelMode.EXPERT_WEIGHT), "3dps not support expert_weight parallel mode"
-
     ep_src = gpc.get_ranks_in_group(ParallelMode.EXPERT)[0]
     epdp_src = gpc.get_ranks_in_group(ParallelMode.EXPERT_DATA)[0]
+    epwp_src = gpc.get_ranks_in_group(ParallelMode.EXPERT_WEIGHT)[0]
     ep_world_size = gpc.get_world_size(ParallelMode.EXPERT)
+    ewp_world_size = gpc.get_world_size(ParallelMode.EXPERT_WEIGHT)
 
     recv_moe_state_dict = _filter_moe_state_dict(recv_state_dict, model.first_layer, model.last_layer, model.num_experts)
     local_state_dict = model.state_dict()
- 
+
     for fqn, tensor in local_state_dict.items():
         if MOE_LAYER_KEY not in fqn:
             continue
 
         recv_tensor = torch.empty_like(tensor)
+        recv_tensor2 = torch.empty_like(tensor)
         if gpc.get_local_rank(ParallelMode.EXPERT_DATA) == 0:
-            if gpc.get_global_rank() == ep_src:
-                key_info = fqn.split(".")
-                layer_idx = int(key_info[1]) + model.first_layer
-                tensor_name = key_info[7]
-                expert_tensors = recv_moe_state_dict[layer_idx][tensor_name]
-                complete_tensor = torch.cat(expert_tensors, dim=1)
-                complete_tensor = complete_tensor.to(tensor.device).to(tensor.dtype)
-                complete_tensor = complete_tensor.t().contiguous()
-                scatter_list = list(torch.chunk(complete_tensor, ep_world_size, dim=0))
+            num_experts = model.num_experts // ep_world_size
+            assert len(tensor.shape) == 2, f"expected tensor to have dim 2, but got {len(tensor.shape)}"
+            in_dim_d_ewp = tensor.size(0) // num_experts
+            out_dim = tensor.size(1)
+            if gpc.get_local_rank(ParallelMode.EXPERT) == 0:
+                recv_tensor = torch.empty(model.num_experts, in_dim_d_ewp, out_dim, dtype=recv_tensor.dtype, device=recv_tensor.device)
+                # first we split expert tensor by weight
+                if gpc.get_local_rank(ParallelMode.EXPERT_WEIGHT) == 0:
+                    key_info = fqn.split(".")
+                    layer_idx = int(key_info[1]) + model.first_layer
+                    tensor_name = key_info[7]
+
+                    # list of [out_dim, in_dim]
+                    expert_tensors = recv_moe_state_dict[layer_idx][tensor_name]
+
+                    for i in range(len(expert_tensors)):
+                        expert_tensors[i] = expert_tensors[i].t().contiguous()
+
+                    # [num_experts, in_dim, out_dim]
+                    # put in_dim before out_dim, so it will be contiguous when chunk
+                    expert_in_out = torch.stack(expert_tensors, dim=0).to(tensor.device).to(tensor.dtype).contiguous()
+
+                    # [num_experts, in_dim / ewp_world_size, out_dim]
+                    scatter_list = list(torch.chunk(expert_in_out, ewp_world_size, dim=1))
+                    for i in range(len(scatter_list)):
+                        scatter_list[i] = scatter_list[i].contiguous()
+                else:
+                    scatter_list = None
+
+                dist.scatter(recv_tensor, scatter_list, src=epwp_src, group=gpc.get_group(ParallelMode.EXPERT_WEIGHT))
+
+            recv_tensor2 = torch.empty(num_experts, in_dim_d_ewp, out_dim, dtype=recv_tensor.dtype, device=recv_tensor.device)
+
+            if gpc.get_local_rank(ParallelMode.EXPERT) == 0:
+                scatter_list = list(torch.chunk(recv_tensor, ep_world_size, dim=0))
                 for i in range(len(scatter_list)):
                     scatter_list[i] = scatter_list[i].contiguous()
             else:
                 scatter_list = None
 
-            dist.scatter(recv_tensor, scatter_list, src=ep_src, group=gpc.get_group(ParallelMode.EXPERT))
+            # [num_experts / ep_size, out_dim, in_dim / ewp_world_size]
+            dist.scatter(recv_tensor2, scatter_list, src=ep_src, group=gpc.get_group(ParallelMode.EXPERT))
+            recv_tensor2 = recv_tensor2.reshape(num_experts * in_dim_d_ewp, -1).contiguous()
 
         # epdp0 broadcast to other dp ranks
-        dist.broadcast(recv_tensor, src=epdp_src, group=gpc.get_group(ParallelMode.EXPERT_DATA))
-        tensor.data.copy_(recv_tensor.data)
+        dist.broadcast(recv_tensor2, src=epdp_src, group=gpc.get_group(ParallelMode.EXPERT_DATA))
+        tensor.data.copy_(recv_tensor2.data)
 
 
 def recover_local_state_tp_or_wp(model, recv_state_dict):
@@ -653,7 +702,7 @@ def update_status_history():
             current_status_interval["begin_timestamp"] = status_history_list[-1]["begin_timestamp"]
             status_history_list.pop()
         status_history_list.append(current_status_interval)
-    
+
 def get_current_status():
     with lock:
         global status
